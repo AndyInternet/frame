@@ -1,26 +1,1816 @@
 ---
-status: draft
+status: plan
 id: initial-build
 target-branch: main
 ---
 
 # Feature Specification
+**Repo:** `frame` | **CLI:** `frame` | **Data:** `.frame/` | **Skill:** `frame-populate`
 
+---
 
+## goal
 
+Single structured frame file gives coding agents full semantic understanding of project within manageable context budget. CLI generates/maintains frame. Claude Code skill populates purpose fields. Agents consume frame exclusively via CLI read tools — never touch JSON directly.
+
+---
+
+## description
+
+CLI + Claude Code skill. Maintains `.frame/frame.json` — structured semantic map of entire project.
+
+- CLI walks project, parses files via language plugins, hashes at AST level, invalidates purposes when code changes
+- Skill fills missing/invalidated purposes via Claude — symbols first, rolls up to file summaries
+- Progressive discovery: agent reads skeleton first, drills into files on demand via CLI
+- Language support plugin-based. Core has zero language knowledge. New language = implement plugin interface, register in `registry.ts`, add grammar import + registry entry in `wasm-loader.ts`. Core logic (frame.ts, search.ts, schema.ts, etc.) never changes — only the plugin manifest files.
+
+---
+
+## tech stack
+
+| Concern         | Choice                                                  |
+| --------------- | ------------------------------------------------------- |
+| Runtime         | Bun                                                     |
+| Language        | TypeScript                                              |
+| AST parsing     | `web-tree-sitter` (WASM — no native addons)             |
+| CLI framework   | `@commander-js/extra-typings` (typed Commander)         |
+| Hashing         | `Bun.hash` (wyhash — fast, non-cryptographic)           |
+| File locking    | `bun:fs` with lockfile + PID                            |
+| Worker pool     | Bun worker threads (`new Worker`)                       |
+| Test framework  | `bun:test`                                              |
+| Lint + format   | Biome                                                   |
+| Package manager | bun                                                     |
+| Distribution    | `bun build --compile` → single platform-specific binary |
+
+**Why Bun:** native TS execution (no build step), fast file I/O + hashing built in, worker threads for parallel processing, `bun build --compile` → single binary with all assets embedded, zero runtime deps on target.
+
+**Why web-tree-sitter (WASM) over node-tree-sitter (NAPI):** no native addons (no platform compilation issues), WASM grammars embed cleanly in compiled binary via `import ... with { type: "file" }`, loads cleanly in worker threads (no NAPI edge cases), grammar `.wasm` files ship prebuilt via npm or build with `tree-sitter build --wasm`. Slightly slower than native — irrelevant for occasional CLI tool.
+
+---
+
+## build & distribution
+
+Single binary per platform. No runtime, no `node_modules`, no install scripts.
+
+```bash
+bun build --compile ./src/cli.ts --outfile frame
+```
+
+**WASM embedding pattern:**
+
+```typescript
+// src/core/wasm-loader.ts
+import treeSitterWasm from "../../grammars/tree-sitter.wasm" with { type: "file" };
+
+// grammar imports — one per supported language
+import tsGrammar from "../../grammars/tree-sitter-typescript.wasm" with { type: "file" };
+import goGrammar from "../../grammars/tree-sitter-go.wasm" with { type: "file" };
+
+// core runtime loaded once per process/worker
+const wasmBinary = await Bun.file(treeSitterWasm).arrayBuffer();
+await Parser.init({ wasmBinary });
+
+// grammar loaded per plugin via grammarWasmFile mapping
+const grammarRegistry: Record<string, string> = {
+  "tree-sitter-typescript.wasm": tsGrammar,
+  "tree-sitter-go.wasm": goGrammar,
+};
+
+export async function loadLanguage(grammarWasmFile: string): Promise<Parser.Language> {
+  const embedded = grammarRegistry[grammarWasmFile];
+  return Parser.Language.load(await Bun.file(embedded).arrayBuffer());
+}
+```
+
+Dev mode: imports resolve to on-disk `.wasm` files. Compiled binary: resolves to embedded copies. Same code path, no conditional logic.
+
+Core calls `loadLanguage(plugin.grammarWasmFile)` once per plugin, passes the resulting `Parser.Language` to `plugin.parse()`. Plugins never touch WASM loading.
+
+**Adding a new language grammar:** add one `import` line and one registry entry to `wasm-loader.ts`. This is a mechanical addition — no logic changes. Bun's `import ... with { type: "file" }` requires static imports for binary embedding, so dynamic discovery is not possible.
+
+**Cross-platform:**
+
+```bash
+bun build --compile --target=bun-linux-x64   ./src/cli.ts --outfile frame-linux-x64
+bun build --compile --target=bun-darwin-arm64 ./src/cli.ts --outfile frame-darwin-arm64
+bun build --compile --target=bun-windows-x64  ./src/cli.ts --outfile frame-windows-x64.exe
+```
+
+**Grammar `.wasm` sourcing:** sourced from npm packages or built via `tree-sitter build --wasm`. Script `scripts/update-grammars.sh` copies latest from `node_modules` into `grammars/`.
+
+---
+
+## lint & format
+
+Biome handles both linting and formatting. Single tool, single config.
+
+```json
+// biome.json
+{
+  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+  "organizeImports": { "enabled": true },
+  "linter": {
+    "enabled": true,
+    "rules": { "recommended": true }
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2
+  },
+  "files": {
+    "ignore": ["grammars/", ".frame/", "node_modules/"]
+  }
+}
+```
+
+**Scripts in `package.json`:**
+
+```json
+{
+  "scripts": {
+    "lint": "biome check src/",
+    "lint:fix": "biome check --write src/",
+    "format": "biome format --write src/"
+  }
+}
+```
+
+`biome check` runs linter + formatter + import sorting in one pass. `--write` applies fixes.
+
+---
+
+## architecture
+
+```
+CLI (write path)                    CLI (read path)
+─────────────────                   ───────────────
+frame generate                      frame read
+frame update                        frame read-file <path>
+                                    frame search <query>
+                                    frame api-surface
+                                    frame deps <path>
+
+         ↓ writes to                        ↑ reads from
+    .frame/
+      frame.json     ← single file, all data, never read directly by agent
+```
+
+Agents invoke read commands via CLI. `frame-populate` skill uses same read commands + write-back to patch purposes into JSON.
+
+---
+
+## components
+
+### CLI tool
+
+**Write path:**
+
+- `frame generate` — walk project, parse all files via plugins, build full frame from scratch. If `frame.json` already exists, it is overwritten — all existing purposes are discarded. Use `update` to preserve purposes. Creates `.frame/` directory and `.frame/.gitignore` if they don't exist
+- `frame update` — full re-walk of project. Adds new files, removes deleted files, re-hashes all files/symbols, clears `purpose` for new or changed entries, leaves unchanged purposes intact. Outdated plugin version auto-invalidates. This is the idempotent steady-state command — safe to run on every code change
+
+**Read path:**
+
+- `frame read` — file skeleton only (path, language, hash, purpose, exports, imports). No symbols. Agent entry point
+- `frame read-file <path>` — full symbol detail for one file
+- `frame search <query>` — search all purpose fields, return matching entries. See [search behavior](#search-behavior)
+- `frame api-surface` — all exported symbols project-wide, grouped by file
+- `frame deps <path>` — what file imports (forward) + what imports file (reverse). Reverse deps computed on-the-fly by scanning all files' `imports` arrays — no precomputed index. `--external` flag includes external deps
+
+**File walking:**
+
+Core walks the project root and filters files in two stages:
+
+1. **Ignore rules** — skip `.git/`, `node_modules/`, `.frame/`, and any paths matched by the project's `.gitignore` (parsed via git's own ignore semantics). Additional ignore patterns can be passed via `--ignore <glob>` (repeatable). No default ignore list beyond `.git/`, `node_modules/`, and `.frame/` — `.gitignore` is the primary mechanism.
+2. **Language matching** — only files whose extension matches a registered plugin's `fileExtensions` are parsed. All other files are silently skipped (not framed). This means adding a language plugin automatically starts framing files with those extensions on the next `generate`/`update`.
+
+**Implementation notes:**
+
+- AST-based hashing per plugin — whitespace/comment changes don't invalidate
+- Language detected per file via plugin `fileExtensions`
+- Read tools serialize JSON → compact text (storage decoupled from agent-facing format)
+
+---
+
+### error handling for read commands
+
+All read commands exit with a non-zero status and a clear message on error:
+
+- **No frame exists** (`frame read`, `frame search`, etc. before `generate`): `"No frame found. Run: frame generate"`
+- **File not in frame** (`frame read-file <path>`, `frame deps <path>`): `"File not in frame: <path>". Check path is relative to project root and file has a supported language extension`
+- **File has parse error** (`frame read-file <path>`): returns the file entry with `parseError` shown and empty symbols — not an error, just partial data
+- **Empty search results** (`frame search <query>`): returns empty result set with exit code 0 — no matches is not an error
+
+---
+
+### search behavior
+
+`frame search <query>` — primary discovery tool. Searches all `purpose` fields (file + symbol level), symbol names, file paths.
+
+**Algorithm:**
+
+1. Tokenize query into lowercase terms
+2. Score each file/symbol entry against all terms
+3. Weights:
+   - Exact symbol name match: **10**
+   - Substring match on file path: **5**
+   - All query terms in purpose: **3**
+   - Partial term match in purpose: **1** per matched term
+4. Exported symbols get **1.5x multiplier**
+5. Sort by score descending, cap at 20
+
+**Flags:** `--limit <n>` (default 20), `--files-only`, `--symbols-only`, `--threshold <n>` (default 1)
+
+**Output:** score, file path, purpose, symbol name/kind/purpose/exported status for symbol matches.
+
+**Null purposes:** searched by name/path only. Marked `[purpose pending]` in output.
+
+---
+
+### parse error handling
+
+Files can fail to parse (malformed source, unsupported syntax, binary with matching extension). Frame stays honest — never silently drops files.
+
+**On parse failure:**
+
+1. Plugin `parse()` throws or returns error
+2. Core creates partial file entry with `parseError` populated
+3. File stays in frame — never dropped
+4. `purpose: null` — skill may attempt file-level purpose from raw source via plugin fallback prompt
+5. `symbols: []` — no extraction possible
+
+```json
+{
+  "path": "src/legacy/broken.ts",
+  "language": "typescript",
+  "pluginVersion": "1.2.0",
+  "hash": "raw:8kLm3xQ",
+  "purpose": null,
+  "parseError": "SyntaxError: Unexpected token at line 42, col 15",
+  "exports": [],
+  "imports": [],
+  "symbols": []
+}
+```
+
+- `hash` prefixed `raw:` = computed from raw content (not AST). Formatting changes will invalidate — acceptable, proper AST hash resumes when file fixed
+- `frame read` shows parse-errored files marked `[parse error]`
+- `frame update` re-attempts parse every run — fixed files resume normal framing
+- `needsGeneration` counter excludes parse errors — tracked separately via `parseErrors` in root
+
+---
+
+### external imports
+
+`imports` tracks internal project imports only. `externalImports` lists external package specifiers separately.
+
+```json
+{
+  "path": "src/auth/handler.ts",
+  "imports": ["src/db/user.ts", "src/lib/jwt.ts"],
+  "externalImports": ["jsonwebtoken", "express", "zod"]
+}
+```
+
+- Plugin determines internal vs external via `classifyImport()` (TS: bare specifiers = external; Go: outside module path = external)
+- `frame read` excludes `externalImports` (save tokens)
+- `frame read-file <path>` always includes them
+- `frame deps <path> --external` includes them
+
+---
+
+### concurrency
+
+**Parallel parsing:**
+
+- `generate`/`update` process files via worker pool
+- Default: `os.cpus().length` workers. Override: `--concurrency <n>`
+- Each file independent — parse, hash, symbol extraction in isolation
+- Each worker loads own `web-tree-sitter` WASM instance — no shared state
+
+**Sequential:**
+
+- Frame JSON write — single atomic write after all processing
+- Purpose generation (skill) — one Claude call at a time, rate-limit-bound
+
+**Progress:** stderr `[42/380] src/auth/handler.ts`. Parse errors reported inline, not batched.
+
+---
+
+### file locking
+
+Skill and `frame update` can write concurrently. Lock prevents corruption.
+
+- All writes acquire exclusive lock (`.frame/frame.lock`) with PID
+- Stale PID → lock forcibly acquired
+- 10s timeout: `"frame.json is locked by PID <n>. Run frame update --force-unlock to clear stale lock"`
+- `--force-unlock` flag clears stale lock manually
+
+**Write protocol:**
+
+1. Acquire lock
+2. Read `frame.json` from disk (not memory cache)
+3. Apply modifications
+4. Write to `.frame/frame.json.tmp`
+5. Atomic rename `.tmp` → `.json`
+6. Release lock
+
+**Skill batching:** writes purposes in batches of 10 symbols. Releases lock between batches — allows `frame update` to interleave.
+
+---
+
+### `frame-populate` skill
+
+- Scan frame for `purpose: null` entries
+- Generate bottom-up: symbols first → roll up to file purpose
+- Caveman language — short, dense, no filler
+- Use plugin-supplied `purposePrompt` templates per language
+- Patch purposes into `frame.json` via locking protocol
+- Batch: 10 symbols, release lock between batches
+
+---
+
+## CLI help system
+
+Three levels: top-level, per-command, machine-optimized. Designed for human + agent consumption.
+
+### `frame --help`
+
+```
+frame — structural frame of your codebase
+
+COMMANDS
+  generate          build frame from scratch
+  update            re-hash files, invalidate changed purposes
+  read              list all files with purposes (no symbols)
+  read-file <path>  full symbol detail for one file
+  search <query>    search purposes across all files and symbols
+  api-surface       all exported symbols grouped by file
+  deps <path>       import relationships for one file
+
+  help              show this message
+  help <command>    detail for a specific command
+  help --agent      machine-optimized summary for agent context injection
+
+OPTIONS
+  --root <path>     project root (default: cwd)
+  --data <path>     frame file location (default: .frame/frame.json)
+  --json            return raw JSON instead of formatted text (read commands)
+  --concurrency <n> worker count for generate/update (default: cpu count)
+  --ignore <glob>   additional ignore pattern for file walking (repeatable)
+```
+
+### `frame help <command>`
+
+Per-command: inputs, outputs, flags, agent usage hint. Examples:
+
+```
+frame read-file <path>
+
+  ARGUMENTS
+    path            relative path from project root
+
+  FLAGS
+    --json          return raw JSON instead of formatted text
+
+  OUTPUT
+    file metadata, exports, imports, externalImports, and all symbols with
+    purposes, kinds, parameters, return types, and languageFeatures.
+    Files with parse errors show the error message instead of symbols.
+
+  AGENT HINT
+    call after `frame read` to drill into a specific file
+```
+
+```
+frame search <query>
+
+  ARGUMENTS
+    query           one or more search terms
+
+  FLAGS
+    --limit <n>     max results (default: 20)
+    --files-only    file-level matches only
+    --symbols-only  symbol-level matches only
+    --threshold <n> minimum score to include (default: 1)
+    --json          return raw JSON instead of formatted text
+
+  OUTPUT
+    ranked list of matching files and symbols with scores,
+    paths, names, kinds, purposes, and export status.
+    entries with null purpose show [purpose pending].
+
+  AGENT HINT
+    primary discovery tool — use when you know what you need
+    but not where it lives. start broad, narrow with flags.
+```
+
+```
+frame deps <path>
+
+  ARGUMENTS
+    path            relative path from project root
+
+  FLAGS
+    --external      include external package imports
+    --json          return raw JSON instead of formatted text
+
+  OUTPUT
+    what this file imports from (internal, and external with flag)
+    and what other project files import this file.
+
+  AGENT HINT
+    use to understand dependency context before changes.
+    --external for build/package issues.
+```
+
+### `frame help --agent`
+
+Machine-optimized. Inject into agent context at session start.
+
+```
+TOOL: frame
+PURPOSE: query structural frame of this project
+
+READ WORKFLOW:
+  1. frame read                → file list + purposes, no symbols
+  2. frame read-file <path>    → full symbols for one file
+  3. frame search <query>      → find files/symbols by purpose text, name, path
+  4. frame api-surface         → all exported symbols
+  5. frame deps <path>         → import graph for one file (--external for packages)
+
+WRITE WORKFLOW (maintainers only):
+  frame generate               → build frame from scratch
+  frame update                 → sync frame to current code
+
+FLAGS (all commands):
+  --json                       → raw JSON output
+  --root <path>                → project root override
+  --data <path>                → frame file override
+
+SEARCH FLAGS:
+  --limit <n>                  → max results (default 20)
+  --files-only                 → file matches only
+  --symbols-only               → symbol matches only
+  --threshold <n>              → min relevance score
+
+DEPS FLAGS:
+  --external                   → include external package imports
+
+WRITE FLAGS:
+  --concurrency <n>            → worker count (default: cpu count)
+  --force-unlock               → clear stale frame lock
+  --ignore <glob>              → additional ignore pattern (repeatable)
+
+NULL PURPOSE FIELDS:
+  purpose: null means not yet generated
+  run: frame update && frame-populate to fill
+
+PARSE ERRORS:
+  files that fail to parse appear with [parse error] marker
+  symbols array is empty, parseError field has details
+```
+
+### help design rules
+
+- No ANSI color codes — agents parse text
+- `--json` on all read commands → raw JSON
+- `--agent` on help → plain dense text, no decoration
+- All command names are verbs, arguments positional
+- `AGENT HINT` per command tells agent when/why to call
+
+---
+
+## symbol kinds
+
+### core kinds (all plugins map these)
+
+| Kind        | Description                    |
+| ----------- | ------------------------------ |
+| `function`  | standalone callable            |
+| `method`    | callable attached to type      |
+| `interface` | structural or nominal contract |
+| `type`      | type alias or definition       |
+| `constant`  | immutable named value          |
+| `variable`  | mutable named value            |
+
+### extended kinds (plugin-declared)
+
+| Kind     | Plugin         | Description          |
+| -------- | -------------- | -------------------- |
+| `class`  | typescript     | class declaration    |
+| `enum`   | typescript, go | enumerated value set |
+| `struct` | go             | composite data type  |
+
+New plugins declare own kinds. Read tools render by kind automatically — no core changes.
+
+---
+
+## frame.json format
+
+### root
+
+```json
+{
+  "version": "1.0.0",
+  "generatedAt": "2026-04-14T10:00:00Z",
+  "updatedAt": "2026-04-14T12:00:00Z",
+  "projectRoot": "/absolute/path/to/project",
+  "totalFiles": 42,
+  "totalSymbols": 380,
+  "needsGeneration": 12,
+  "parseErrors": 2,
+  "languageComposition": {
+    "typescript": 30,
+    "go": 12
+  },
+  "files": []
+}
+```
+
+`needsGeneration` = count of individual entries (files + symbols) with `purpose: null` that parsed OK. A file with `purpose: null` and 10 symbols all with `purpose: null` contributes 11 to this count. `parseErrors` = count of files that failed to parse. Tracked separately — different reasons for incompleteness.
+
+### file entry
+
+```json
+{
+  "path": "src/auth/handler.ts",
+  "language": "typescript",
+  "pluginVersion": "1.2.0",
+  "hash": "3vKx9mP",
+  "purpose": "handles HTTP auth routes, issues JWT tokens",
+  "parseError": null,
+  "exports": ["AuthHandler", "validateToken", "AuthError"],
+  "imports": ["src/db/user.ts", "src/lib/jwt.ts"],
+  "externalImports": ["jsonwebtoken", "express", "zod"],
+  "symbols": []
+}
+```
+
+`purpose: null` = needs generation. `pluginVersion` mismatch on `update` → clear purposes, full re-parse. `parseError: null` on success, error string on failure. `externalImports` = external package specifiers.
+
+---
+
+## symbol schema
+
+Core shape shared by all symbols. Language-specific data in `languageFeatures` — owned by plugin, opaque to core.
+
+### core symbol shape
+
+```json
+{
+  "name": "validateToken",
+  "kind": "function",
+  "hash": "6xMp2nL",
+  "exported": true,
+  "purpose": "decodes JWT, returns payload or error",
+  "parameters": [{ "name": "token", "type": "string" }],
+  "returns": ["TokenPayload"],
+  "genericParams": [],
+  "languageFeatures": {}
+}
+```
+
+`parameters`, `returns`, `genericParams` — present on `function`/`method` only. `purpose: null` = needs generation.
+
+---
+
+## languageFeatures reference
+
+### TypeScript plugin
+
+**function:**
+
+```json
+"languageFeatures": {
+  "async": true,
+  "throws": ["InvalidTokenError"]
+}
+```
+
+**method:**
+
+```json
+"languageFeatures": {
+  "async": false,
+  "throws": [],
+  "class": "AuthHandler"
+}
+```
+
+`throws` — best-effort from JSDoc `@throws`.
+
+**class:**
+
+```json
+"languageFeatures": {
+  "extends": "BaseHandler",
+  "implements": ["IHandler"],
+  "constructor": {
+    "parameters": [{ "name": "db", "type": "Database" }]
+  },
+  "properties": [
+    { "name": "tokenExpiry", "type": "number", "visibility": "private" }
+  ],
+  "methods": ["login", "logout", "refresh"]
+}
+```
+
+`visibility`: `public | private | protected`.
+
+**interface:**
+
+```json
+"languageFeatures": {
+  "structural": false,
+  "members": [
+    { "name": "handle", "type": "(req: Request) => Response" }
+  ],
+  "extends": ["IBase"]
+}
+```
+
+**type:**
+
+```json
+"languageFeatures": {
+  "definition": "{ userId: string; role: Role; exp: number }"
+}
+```
+
+**enum:**
+
+```json
+"languageFeatures": {
+  "kind": "enum",
+  "members": [
+    { "name": "Admin", "value": "admin" },
+    { "name": "User", "value": "user" }
+  ]
+}
+```
+
+**constant / variable:**
+
+```json
+"languageFeatures": {
+  "declarationKind": "const",
+  "value": "3600"
+}
+```
+
+`declarationKind`: `const | let | var`. `value` present only if static literal.
+
+---
+
+### Go plugin
+
+**function:**
+
+```json
+"languageFeatures": {
+  "errorReturn": true,
+  "goroutineHint": false,
+  "initFunc": false
+}
+```
+
+`errorReturn`: final return is `error`. `goroutineHint`: best-effort goroutine launch detection. `initFunc`: true if `func init()`.
+
+**method:**
+
+```json
+"languageFeatures": {
+  "receiver": { "type": "AuthHandler", "pointer": true },
+  "errorReturn": true,
+  "goroutineHint": false
+}
+```
+
+`pointer`: true for `*AuthHandler`, false for value receivers.
+
+**struct:**
+
+```json
+"languageFeatures": {
+  "fields": [
+    {
+      "name": "ID",
+      "type": "int64",
+      "exported": true,
+      "tags": { "json": "id", "db": "id" }
+    },
+    {
+      "name": "email",
+      "type": "string",
+      "exported": false,
+      "tags": { "json": "email", "db": "email" }
+    }
+  ]
+}
+```
+
+`exported` derived from capitalization. `tags` = all struct tag key/value pairs.
+
+**interface:**
+
+```json
+"languageFeatures": {
+  "structural": true,
+  "members": [
+    { "name": "Handle", "type": "func(req Request) Response" }
+  ]
+}
+```
+
+**enum (iota block):**
+
+```json
+"languageFeatures": {
+  "kind": "iota",
+  "iotaBlock": "RetryLimits",
+  "members": [
+    { "name": "MaxRetries", "value": "0" },
+    { "name": "WarnAt", "value": "1" }
+  ]
+}
+```
+
+**constant:**
+
+```json
+"languageFeatures": {
+  "value": "5",
+  "iotaBlock": "RetryLimits"
+}
+```
+
+`iotaBlock`: group name if part of iota const block, `null` otherwise.
+
+**variable:**
+
+```json
+"languageFeatures": {
+  "declarationKind": "var"
+}
+```
+
+---
+
+## core vs plugin responsibility
+
+| Concern                    | Owner                              |
+| -------------------------- | ---------------------------------- |
+| File walking               | core                               |
+| Language detection         | core (via plugin `fileExtensions`) |
+| WASM runtime init          | core (`wasm-loader.ts`)            |
+| Grammar WASM loading       | core (on behalf of plugins)        |
+| AST parsing                | plugin (via web-tree-sitter)       |
+| Symbol extraction          | plugin                             |
+| AST hashing                | plugin                             |
+| Export detection           | plugin                             |
+| Import classification      | plugin                             |
+| `languageFeatures` shape   | plugin                             |
+| Purpose generation prompts | plugin                             |
+| Frame read / write         | core                               |
+| File locking               | core                               |
+| Concurrent file processing | core                               |
+| Progressive discovery      | core                               |
+| Search scoring             | core                               |
+| Help output                | core                               |
+| `--json` serialization     | core                               |
+| Binary compilation         | core (`bun build --compile`)       |
+
+---
+
+## language plugin interface
+
+Every language implements this contract. Core never touches language-specific logic.
+
+```typescript
+interface LanguagePlugin {
+  // identification
+  id: string; // "typescript" | "go" | "rust" etc
+  version: string; // semver — bumping invalidates files framed by older version
+  fileExtensions: string[]; // [".ts", ".tsx"] etc
+  symbolKinds: SymbolKind[]; // kinds this plugin can emit
+
+  // grammar — key into wasm-loader registry, core loads it
+  grammarWasmFile: string; // e.g. "tree-sitter-typescript.wasm"
+
+  // parsing — receives Language from core (core owns WASM loading)
+  parse(filePath: string, source: string, language: Parser.Language): Promise<ParsedFile>;
+
+  // hashing — AST-based, not raw text
+  hashFile(parsed: ParsedFile): string;
+  hashSymbol(symbol: RawSymbol): string;
+
+  // export detection — plugin owns this entirely
+  isExported(symbol: RawSymbol): boolean;
+
+  // import classification — plugin owns the heuristic
+  classifyImport(
+    importPath: string,
+    projectRoot: string,
+  ): "internal" | "external";
+
+  // skill prompt templates
+  purposePrompt: {
+    symbol: string; // template for symbol-level purpose generation
+    file: string; // template for file-level rollup
+  };
+}
+```
+
+**Plugin registry directory structure:**
+
+```
+grammars/
+  tree-sitter.wasm              ← core runtime (from web-tree-sitter npm package)
+  tree-sitter-typescript.wasm   ← grammar (from tree-sitter-typescript npm package)
+  tree-sitter-go.wasm           ← grammar (from tree-sitter-go npm package)
+scripts/
+  update-grammars.sh            ← copies .wasm files from node_modules into grammars/
+src/
+  cli.ts              ← entry point, Commander setup, compiled by bun build
+  core/
+    frame.ts          ← orchestration only, no language knowledge
+    schema.ts         ← generic symbol types
+    registry.ts       ← plugin registry
+    lock.ts           ← file locking for frame.json writes
+    search.ts         ← search scoring and ranking
+    workers.ts        ← parallel file processing pool
+    wasm-loader.ts    ← web-tree-sitter init, grammar loading, WASM embed imports
+  plugins/
+    typescript/
+      index.ts        ← implements LanguagePlugin
+      parser.ts       ← AST traversal + symbol extraction (receives Parser.Language from core)
+      hashing.ts
+      prompts.ts
+    go/
+      index.ts        ← implements LanguagePlugin
+      parser.ts       ← AST traversal + symbol extraction (receives Parser.Language from core)
+      hashing.ts
+      prompts.ts
+    rust/             ← new language: add folder, implement interface, register. done.
+      ...
+```
+
+---
+
+## file placement
+
+```
+.frame/
+  .gitignore      ← contains "*" — gitignores everything in .frame/ automatically
+  frame.json      ← generated, never committed
+  frame.lock      ← transient lock file
+grammars/
+  tree-sitter.wasm              ← commit — core WASM runtime
+  tree-sitter-typescript.wasm   ← commit — grammar binaries
+  tree-sitter-go.wasm
+```
+
+`frame generate` creates `.frame/.gitignore` containing `*` if it doesn't exist. This gitignores all frame data without touching the project's root `.gitignore`. Nothing in `.frame/` is ever committed.
+
+Grammar `.wasm` in `grammars/` always committed. Binary but small (200–500KB each), change only on grammar version upgrades. Must be present at build time for `bun build --compile` embedding.
 # Attachments
 
 # Implementation Plan
 
+## Approach
 
+Greenfield build. Dependencies flow downward: CLI → core → plugins. Build bottom-up.
+
+**Build order:**
+1. Scaffolding — `package.json`, `tsconfig.json`, `biome.json`, grammar WASM setup
+2. Core types — `src/core/schema.ts` (all shared interfaces)
+3. Hash utility — `src/core/hash.ts`
+4. WASM loader — `src/core/wasm-loader.ts`
+5. Plugin registry — `src/core/registry.ts`
+6. File locking — `src/core/lock.ts`
+7. File walking — `src/core/walker.ts`
+8. TypeScript plugin — first plugin, enables integration testing
+9. Go plugin
+10. Worker pool — `src/core/workers.ts` + `src/core/worker-entry.ts`
+11. Frame orchestration — `src/core/frame.ts` (generate/update)
+12. Search — `src/core/search.ts`
+13. Output formatting — `src/core/formatter.ts`
+14. CLI entry point — `src/cli.ts` (all commands wired together)
+15. `frame-populate` skill file
+
+**File map — new files only (greenfield):**
+
+```
+package.json
+tsconfig.json
+biome.json
+scripts/
+  update-grammars.sh
+grammars/
+  tree-sitter.wasm                  ← from web-tree-sitter npm
+  tree-sitter-typescript.wasm       ← from tree-sitter-typescript npm (tsx grammar)
+  tree-sitter-go.wasm               ← from tree-sitter-go npm
+src/
+  cli.ts                            ← Commander setup, all commands, bun build entry
+  core/
+    schema.ts                       ← all shared TypeScript types + FRAME_VERSION
+    hash.ts                         ← Bun.hash wrapper, base62 encoding
+    wasm-loader.ts                  ← WASM init + grammar registry (static imports)
+    registry.ts                     ← plugin registry, extension→plugin lookup
+    lock.ts                         ← file locking (PID, stale detection, atomic write)
+    walker.ts                       ← file walking + .gitignore via git ls-files
+    workers.ts                      ← worker pool management
+    worker-entry.ts                 ← worker thread entry point
+    frame.ts                        ← generate/update/loadFrame/writePurposes
+    search.ts                       ← search scoring + ranking
+    formatter.ts                    ← text output for all read commands
+  plugins/
+    typescript/
+      index.ts                      ← LanguagePlugin implementation
+      parser.ts                     ← tree-sitter AST traversal + symbol extraction
+      hashing.ts                    ← AST-based hashing via hash utility
+      prompts.ts                    ← purposePrompt templates
+    go/
+      index.ts
+      parser.ts
+      hashing.ts
+      prompts.ts
+tests/
+  core/
+    hash.test.ts
+    lock.test.ts
+    search.test.ts
+    walker.test.ts
+    frame.test.ts
+    formatter.test.ts
+  plugins/
+    typescript/parser.test.ts
+    typescript/hashing.test.ts
+    go/parser.test.ts
+    go/hashing.test.ts
+  integration/
+    cli.test.ts
+  fixtures/
+    typescript/
+      simple.ts                     ← basic functions, exports, imports
+      complex.ts                    ← classes, interfaces, generics, decorators
+      broken.ts                     ← intentionally unparseable
+    go/
+      simple.go
+      complex.go
+      broken.go
+    .gitignore                      ← fixture gitignore for walker tests
+```
+
+**Decisions not in spec (simplest defaults):**
+- `walker.ts` extracted from `frame.ts` — walking is independent concern
+- `formatter.ts` added — text serialization for read commands is substantial
+- `worker-entry.ts` added — separate entry point for Bun worker threads
+- `hash.ts` added — shared hash utility used by all plugins and core
+- `frame write-purposes` subcommand added — skill calls this to patch purposes; keeps all locking/IO in CLI
+- TypeScript plugin uses `tree-sitter-tsx.wasm` (tsx superset grammar handles both `.ts` and `.tsx`); referenced as `tree-sitter-typescript.wasm` in wasm-loader for spec consistency — update-grammars.sh copies tsx wasm with this name
+
+---
+
+## Shared Contracts
+
+### Core Types (`src/core/schema.ts`)
+
+```typescript
+import type Parser from "web-tree-sitter";
+
+// --- Symbol Kinds ---
+export type CoreSymbolKind = "function" | "method" | "interface" | "type" | "constant" | "variable";
+export type SymbolKind = CoreSymbolKind | (string & {});
+
+// --- Parameter ---
+export interface Parameter {
+  name: string;
+  type: string;
+}
+
+// --- Symbol (stored in frame.json) ---
+export interface FrameSymbol {
+  name: string;
+  kind: SymbolKind;
+  hash: string;
+  exported: boolean;
+  purpose: string | null;
+  parameters?: Parameter[];
+  returns?: string[];
+  genericParams?: string[];
+  languageFeatures: Record<string, unknown>;
+}
+
+// --- File Entry (stored in frame.json) ---
+export interface FileEntry {
+  path: string;
+  language: string;
+  pluginVersion: string;
+  hash: string;
+  purpose: string | null;
+  parseError: string | null;
+  exports: string[];
+  imports: string[];
+  externalImports: string[];
+  symbols: FrameSymbol[];
+}
+
+// --- Frame Root (frame.json top-level) ---
+export interface FrameRoot {
+  version: string;
+  generatedAt: string;
+  updatedAt: string;
+  projectRoot: string;
+  totalFiles: number;
+  totalSymbols: number;
+  needsGeneration: number;
+  parseErrors: number;
+  languageComposition: Record<string, number>;
+  files: FileEntry[];
+}
+
+// --- Plugin Types ---
+export interface RawSymbol {
+  name: string;
+  kind: SymbolKind;
+  exported: boolean;
+  parameters?: Parameter[];
+  returns?: string[];
+  genericParams?: string[];
+  languageFeatures: Record<string, unknown>;
+  /** Serialized AST subtree text for hashing (plugin controls what's included) */
+  astText: string;
+}
+
+export interface ParsedFile {
+  filePath: string;
+  symbols: RawSymbol[];
+  imports: string[];
+  /** Full AST text for file-level hashing (plugin strips comments/whitespace) */
+  astText: string;
+}
+
+export type ParseResult =
+  | { ok: true; parsed: ParsedFile }
+  | { ok: false; error: string };
+
+export interface LanguagePlugin {
+  id: string;
+  version: string;
+  fileExtensions: string[];
+  symbolKinds: SymbolKind[];
+  grammarWasmFile: string;
+  parse(filePath: string, source: string, language: Parser.Language): Promise<ParseResult>;
+  hashFile(parsed: ParsedFile): string;
+  hashSymbol(symbol: RawSymbol): string;
+  isExported(symbol: RawSymbol): boolean;
+  classifyImport(importPath: string, projectRoot: string): "internal" | "external";
+  purposePrompt: { symbol: string; file: string };
+}
+
+// --- Worker Messages ---
+export interface WorkerRequest {
+  filePath: string;
+  source: string;
+  pluginId: string;
+  projectRoot: string;
+}
+
+export interface WorkerFileResult {
+  fileHash: string;
+  symbols: Omit<FrameSymbol, "purpose">[];
+  imports: string[];
+  externalImports: string[];
+  exports: string[];
+}
+
+export interface WorkerResponse {
+  filePath: string;
+  pluginId: string;
+  pluginVersion: string;
+  result?: WorkerFileResult;
+  parseError?: string;
+}
+
+// --- Search ---
+export interface SearchResult {
+  score: number;
+  filePath: string;
+  filePurpose: string | null;
+  symbol?: {
+    name: string;
+    kind: SymbolKind;
+    purpose: string | null;
+    exported: boolean;
+  };
+}
+
+export interface SearchOptions {
+  limit: number;
+  filesOnly: boolean;
+  symbolsOnly: boolean;
+  threshold: number;
+}
+
+// --- Purpose Patching (for write-purposes command) ---
+export interface PurposePatch {
+  path: string;
+  symbolName?: string; // omit for file-level purpose
+  purpose: string;
+}
+
+// --- Constants ---
+export const FRAME_VERSION = "1.0.0";
+```
+
+### Module Signatures
+
+```typescript
+// --- src/core/hash.ts ---
+/** Bun.hash (wyhash) → base62 string */
+export function hashString(input: string): string;
+/** "raw:" + hashString(source) for parse-error files */
+export function rawHash(source: string): string;
+
+// --- src/core/wasm-loader.ts ---
+/** Call once per process/worker. Loads web-tree-sitter WASM runtime. */
+export async function initParser(): Promise<void>;
+/** Load a grammar by filename key (e.g. "tree-sitter-typescript.wasm") */
+export async function loadLanguage(grammarWasmFile: string): Promise<Parser.Language>;
+
+// --- src/core/registry.ts ---
+export function getPluginForFile(filePath: string): LanguagePlugin | null;
+export function getPluginById(id: string): LanguagePlugin | null;
+export function getAllPlugins(): LanguagePlugin[];
+
+// --- src/core/lock.ts ---
+export interface LockHandle { release(): Promise<void> }
+/** Acquire exclusive lock on .frame/frame.lock. Throws after timeoutMs (default 10000). */
+export async function acquireLock(dataDir: string, timeoutMs?: number): Promise<LockHandle>;
+export async function forceUnlock(dataDir: string): Promise<void>;
+
+// --- src/core/walker.ts ---
+export interface WalkOptions { root: string; extraIgnores: string[] }
+/** Returns relative paths from root for all non-ignored files */
+export async function walkProject(opts: WalkOptions): Promise<string[]>;
+
+// --- src/core/workers.ts ---
+export interface PoolOptions {
+  concurrency: number;
+  projectRoot: string;
+  onProgress: (current: number, total: number, filePath: string) => void;
+  onError: (filePath: string, error: string) => void;
+}
+export async function processFiles(
+  files: Array<{ path: string; source: string; pluginId: string }>,
+  opts: PoolOptions,
+): Promise<WorkerResponse[]>;
+
+// --- src/core/frame.ts ---
+export interface FrameOptions {
+  root: string;
+  dataPath: string; // default: path.join(root, ".frame", "frame.json")
+  concurrency: number;
+  extraIgnores: string[];
+}
+export async function generate(opts: FrameOptions): Promise<FrameRoot>;
+export async function update(opts: FrameOptions): Promise<FrameRoot>;
+export async function loadFrame(dataPath: string): Promise<FrameRoot>;
+/** Patch purposes into frame.json via locking protocol */
+export async function writePurposes(dataDir: string, patches: PurposePatch[]): Promise<void>;
+/** Recompute root-level stats from files array */
+export function computeStats(files: FileEntry[]): Pick<FrameRoot,
+  "totalFiles" | "totalSymbols" | "needsGeneration" | "parseErrors" | "languageComposition">;
+
+// --- src/core/search.ts ---
+export function search(frame: FrameRoot, query: string, opts: SearchOptions): SearchResult[];
+
+// --- src/core/formatter.ts ---
+export function formatSkeleton(frame: FrameRoot): string;
+export function formatFileDetail(file: FileEntry): string;
+export function formatSearchResults(results: SearchResult[], query: string): string;
+export function formatApiSurface(frame: FrameRoot): string;
+export function formatDeps(file: FileEntry, reverseDeps: string[], includeExternal: boolean): string;
+export function formatHelp(command?: string, agent?: boolean): string;
+```
+
+### Hash Utility (`src/core/hash.ts`)
+
+```typescript
+const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+function encodeBase62(n: bigint): string {
+  if (n === 0n) return "0";
+  let result = "";
+  let num = n < 0n ? -n : n;
+  while (num > 0n) {
+    result = BASE62[Number(num % 62n)] + result;
+    num = num / 62n;
+  }
+  return result;
+}
+
+export function hashString(input: string): string {
+  // Bun.hash returns number; convert to bigint for base62
+  return encodeBase62(BigInt(Bun.hash(input)));
+}
+
+export function rawHash(source: string): string {
+  return `raw:${hashString(source)}`;
+}
+```
+
+---
+
+## Module Implementation Notes
+
+### `wasm-loader.ts`
+
+Static imports required for Bun compile embedding. Top-level await for `Parser.init()`.
+
+```typescript
+import Parser from "web-tree-sitter";
+import treeSitterWasm from "../../grammars/tree-sitter.wasm" with { type: "file" };
+import tsGrammar from "../../grammars/tree-sitter-typescript.wasm" with { type: "file" };
+import goGrammar from "../../grammars/tree-sitter-go.wasm" with { type: "file" };
+
+const grammarRegistry: Record<string, string> = {
+  "tree-sitter-typescript.wasm": tsGrammar,
+  "tree-sitter-go.wasm": goGrammar,
+};
+
+let initialized = false;
+
+export async function initParser(): Promise<void> {
+  if (initialized) return;
+  await Parser.init({ wasmBinary: await Bun.file(treeSitterWasm).arrayBuffer() });
+  initialized = true;
+}
+
+export async function loadLanguage(grammarWasmFile: string): Promise<Parser.Language> {
+  if (!initialized) await initParser();
+  const path = grammarRegistry[grammarWasmFile];
+  if (!path) throw new Error(`Unknown grammar: ${grammarWasmFile}`);
+  return Parser.Language.load(await Bun.file(path).arrayBuffer());
+}
+```
+
+### `registry.ts`
+
+Imports plugin instances, builds extension→plugin map at module load.
+
+```typescript
+import { typescriptPlugin } from "../plugins/typescript/index.ts";
+import { goPlugin } from "../plugins/go/index.ts";
+import type { LanguagePlugin } from "./schema.ts";
+
+const plugins: LanguagePlugin[] = [typescriptPlugin, goPlugin];
+const extMap = new Map<string, LanguagePlugin>();
+for (const p of plugins) {
+  for (const ext of p.fileExtensions) extMap.set(ext, p);
+}
+
+export function getPluginForFile(filePath: string): LanguagePlugin | null {
+  const ext = "." + filePath.split(".").pop();
+  return extMap.get(ext) ?? null;
+}
+export function getPluginById(id: string): LanguagePlugin | null {
+  return plugins.find(p => p.id === id) ?? null;
+}
+export function getAllPlugins(): LanguagePlugin[] { return plugins; }
+```
+
+### `lock.ts`
+
+Lock file stores PID as text. Check if PID alive via `process.kill(pid, 0)` (signal 0 = existence check). Stale = PID not alive. Retry loop with 100ms interval until timeout.
+
+**Write protocol** (used by `frame.ts` and `writePurposes`):
+1. Acquire lock → write PID to `.frame/frame.lock`
+2. Read `frame.json` from disk
+3. Mutate in memory
+4. Write to `.frame/frame.json.tmp`
+5. `fs.renameSync` (atomic) `.tmp` → `.json`
+6. Release lock → delete `.frame/frame.lock`
+
+### `walker.ts`
+
+Two strategies:
+1. **Git repo detected** (`.git` exists): `git ls-files --cached --others --exclude-standard` — respects `.gitignore` perfectly
+2. **No git**: recursive walk via `fs.readdir`, skip `.git/`, `node_modules/`, `.frame/`
+
+Both paths then: filter out `.frame/**`, apply `--ignore` globs via `Bun.Glob`, return relative paths sorted.
+
+```typescript
+import { Glob } from "bun";
+import { join } from "node:path";
+
+export async function walkProject(opts: WalkOptions): Promise<string[]> {
+  const hasGit = await Bun.file(join(opts.root, ".git")).exists()
+    || await (async () => { try { return (await Bun.spawn(["git", "rev-parse", "--git-dir"], { cwd: opts.root, stdout: "pipe", stderr: "pipe" }).exited) === 0; } catch { return false; } })();
+
+  let files: string[];
+  if (hasGit) {
+    const proc = Bun.spawn(
+      ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+      { cwd: opts.root, stdout: "pipe" },
+    );
+    const output = await new Response(proc.stdout).text();
+    files = output.trim().split("\n").filter(Boolean);
+  } else {
+    files = await recursiveReaddir(opts.root, opts.root);
+  }
+
+  // Always exclude .frame/
+  files = files.filter(f => !f.startsWith(".frame/") && !f.startsWith(".frame\\"));
+
+  // Apply extra ignore globs
+  for (const pattern of opts.extraIgnores) {
+    const glob = new Glob(pattern);
+    files = files.filter(f => !glob.match(f));
+  }
+
+  return files.sort();
+}
+```
+
+Note: `.git` can be a file (worktree) or directory. Check existence of `.git` path OR use `git rev-parse` as fallback.
+
+### `worker-entry.ts`
+
+Runs in Bun worker thread. Receives `WorkerRequest`, returns `WorkerResponse`.
+
+```typescript
+// Self-contained: imports wasm-loader, registry, runs parse pipeline
+import { initParser, loadLanguage } from "./wasm-loader.ts";
+import { getPluginById } from "./registry.ts";
+import type { WorkerRequest, WorkerResponse } from "./schema.ts";
+
+declare var self: Worker;
+
+self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
+  const req = event.data;
+  const plugin = getPluginById(req.pluginId)!;
+  await initParser(); // idempotent
+  const lang = await loadLanguage(plugin.grammarWasmFile);
+  const result = await plugin.parse(req.filePath, req.source, lang);
+
+  if (!result.ok) {
+    self.postMessage({ filePath: req.filePath, pluginId: req.pluginId,
+      pluginVersion: plugin.version, parseError: result.error } satisfies WorkerResponse);
+    return;
+  }
+
+  const parsed = result.parsed;
+  const symbols = parsed.symbols.map(sym => ({
+    name: sym.name, kind: sym.kind, hash: plugin.hashSymbol(sym),
+    exported: sym.exported, parameters: sym.parameters, returns: sym.returns,
+    genericParams: sym.genericParams, languageFeatures: sym.languageFeatures,
+  }));
+  const imports = parsed.imports.filter(i => plugin.classifyImport(i, req.projectRoot) === "internal");
+  const externalImports = parsed.imports.filter(i => plugin.classifyImport(i, req.projectRoot) === "external");
+  const exports = symbols.filter(s => s.exported).map(s => s.name);
+
+  self.postMessage({
+    filePath: req.filePath, pluginId: req.pluginId, pluginVersion: plugin.version,
+    result: { fileHash: plugin.hashFile(parsed), symbols, imports, externalImports, exports },
+  } satisfies WorkerResponse);
+};
+```
+
+### `workers.ts`
+
+Pool of Bun `Worker` instances. Sends files round-robin. Collects responses. Reports progress to stderr.
+
+```typescript
+export async function processFiles(
+  files: Array<{ path: string; source: string; pluginId: string }>,
+  opts: PoolOptions,
+): Promise<WorkerResponse[]> {
+  const workerCount = Math.min(opts.concurrency, files.length);
+  const workers = Array.from({ length: workerCount }, () =>
+    new Worker(new URL("./worker-entry.ts", import.meta.url).href));
+  // Dispatch files across workers, collect results via message handlers
+  // Each worker processes one file at a time, gets next from queue on completion
+  // Return all WorkerResponse[] when queue empty
+}
+```
+
+### `frame.ts`
+
+**`generate()`:** Walk → read sources → process via workers → build FileEntry[] → compute stats → ensure `.frame/` dir + `.gitignore` → atomic write `frame.json`. All purposes `null`.
+
+**`update()`:** Walk → read sources → load existing frame → for each file:
+- New file → process, purpose=null
+- Deleted file → remove from frame
+- Existing file → re-process, compare hashes:
+  - File hash unchanged → keep existing purposes
+  - File hash changed → purposes=null for file + changed symbols
+  - Plugin version mismatch → full re-process, purposes=null
+- Recompute stats → atomic write
+
+**`loadFrame()`:** Read + parse `frame.json`. Throw if missing: `"No frame found. Run: frame generate"`
+
+**`writePurposes()`:** Acquire lock → read frame from disk → apply patches (match by path + optional symbolName) → recompute `needsGeneration` → atomic write → release lock.
+
+**`computeStats()`:** Single pass over files array. Count files, symbols, null purposes (excluding parse errors), parse errors, language composition.
+
+### `search.ts`
+
+Implements spec algorithm exactly:
+
+```typescript
+export function search(frame: FrameRoot, query: string, opts: SearchOptions): SearchResult[] {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const results: SearchResult[] = [];
+
+  for (const file of frame.files) {
+    // File-level scoring
+    if (!opts.symbolsOnly) {
+      const score = scoreEntry(terms, file.path, file.purpose, null, false);
+      if (score >= opts.threshold) results.push({ score, filePath: file.path, filePurpose: file.purpose });
+    }
+    // Symbol-level scoring
+    if (!opts.filesOnly) {
+      for (const sym of file.symbols) {
+        let score = scoreEntry(terms, file.path, sym.purpose, sym.name, sym.exported);
+        if (score >= opts.threshold) {
+          results.push({ score, filePath: file.path, filePurpose: file.purpose,
+            symbol: { name: sym.name, kind: sym.kind, purpose: sym.purpose, exported: sym.exported } });
+        }
+      }
+    }
+  }
+
+  results.sort((a, b) => b.score - a.score);
+  return results.slice(0, opts.limit);
+}
+
+function scoreEntry(terms: string[], path: string, purpose: string | null, symbolName: string | null, exported: boolean): number {
+  let score = 0;
+  const pathLower = path.toLowerCase();
+  const purposeLower = purpose?.toLowerCase() ?? "";
+
+  for (const term of terms) {
+    if (symbolName && symbolName.toLowerCase() === term) score += 10;  // exact name match
+    if (pathLower.includes(term)) score += 5;                          // path substring
+    if (purposeLower.includes(term)) score += 1;                       // partial purpose match
+  }
+  if (purpose && terms.every(t => purposeLower.includes(t))) score += 3; // all terms in purpose
+  if (exported) score *= 1.5;
+
+  return score;
+}
+```
+
+### `formatter.ts`
+
+All formatters output plain text (no ANSI). Each has a corresponding JSON mode (just `JSON.stringify` the data).
+
+**`formatSkeleton`** — one block per file:
+```
+src/auth/handler.ts [typescript]
+  handles HTTP auth routes, issues JWT tokens
+  exports: AuthHandler, validateToken, AuthError
+  imports: src/db/user.ts, src/lib/jwt.ts
+```
+Parse-errored files show `[parse error]` tag. Null purpose shows `[purpose pending]`.
+
+**`formatFileDetail`** — file header + one block per symbol:
+```
+src/auth/handler.ts [typescript] hash:3vKx9mP
+  handles HTTP auth routes, issues JWT tokens
+  exports: AuthHandler, validateToken
+  imports: src/db/user.ts
+  external: jsonwebtoken, zod
+
+  function validateToken (exported) hash:6xMp2nL
+    decodes JWT, returns payload or error
+    params: token: string
+    returns: TokenPayload
+    async: true, throws: InvalidTokenError
+```
+`languageFeatures` rendered as `key: value` pairs after returns.
+
+**`formatSearchResults`** — score + path + purpose per match. Symbol matches include name/kind/exported.
+
+**`formatApiSurface`** — grouped by file, one line per exported symbol: `kind name(params) → returns`.
+
+**`formatDeps`** — sections: Imports, External imports (if `--external`), Imported by (reverse).
+
+**`formatHelp`** — returns help text strings per spec's CLI help system section. `--agent` flag returns machine-optimized text.
+
+### `cli.ts`
+
+Commander setup with global options on program, subcommands for each operation.
+
+```typescript
+import { Command } from "@commander-js/extra-typings";
+
+const program = new Command()
+  .name("frame")
+  .description("structural frame of your codebase")
+  .option("--root <path>", "project root", process.cwd())
+  .option("--data <path>", "frame file location")
+  .option("--json", "return raw JSON instead of formatted text")
+  .option("--concurrency <n>", "worker count", String(navigator.hardwareConcurrency))
+  .option("--ignore <glob...>", "additional ignore patterns", []);
+
+program.command("generate").description("build frame from scratch")
+  .option("--force-unlock", "clear stale frame lock")
+  .action(async (cmdOpts) => { /* ... */ });
+
+program.command("update").description("re-hash files, invalidate changed purposes")
+  .option("--force-unlock", "clear stale frame lock")
+  .action(async (cmdOpts) => { /* ... */ });
+
+program.command("read").description("list all files with purposes")
+  .action(async () => { /* loadFrame → formatSkeleton or JSON.stringify */ });
+
+program.command("read-file").description("full symbol detail for one file")
+  .argument("<path>", "relative path from project root")
+  .action(async (filePath) => { /* loadFrame → find file → formatFileDetail */ });
+
+program.command("search").description("search purposes across files and symbols")
+  .argument("<query...>", "search terms")
+  .option("--limit <n>", "max results", "20")
+  .option("--files-only", "file matches only")
+  .option("--symbols-only", "symbol matches only")
+  .option("--threshold <n>", "minimum score", "1")
+  .action(async (queryParts, cmdOpts) => { /* loadFrame → search → format */ });
+
+program.command("api-surface").description("all exported symbols grouped by file")
+  .action(async () => { /* loadFrame → formatApiSurface */ });
+
+program.command("deps").description("import relationships for one file")
+  .argument("<path>", "relative path from project root")
+  .option("--external", "include external imports")
+  .action(async (filePath, cmdOpts) => { /* loadFrame → compute reverse deps → formatDeps */ });
+
+program.command("write-purposes").description("patch purposes into frame (for skill use)")
+  .action(async () => { /* read PurposePatch[] from stdin → writePurposes() */ });
+
+program.command("help").description("show help")
+  .argument("[command]", "command name")
+  .option("--agent", "machine-optimized output")
+  .action(async (cmd, cmdOpts) => { /* formatHelp */ });
+```
+
+**Error handling pattern** for read commands:
+```typescript
+function handleReadError(e: unknown): never {
+  if (e instanceof FrameNotFoundError) {
+    console.error("No frame found. Run: frame generate");
+    process.exit(1);
+  }
+  if (e instanceof FileNotInFrameError) {
+    console.error(`File not in frame: ${e.path}. Check path is relative to project root and file has a supported language extension`);
+    process.exit(1);
+  }
+  throw e;
+}
+```
+
+### TypeScript Plugin
+
+**`parser.ts`** — traverse tree-sitter AST root children. Key node types:
+
+| tree-sitter node type | → FrameSymbol kind |
+|---|---|
+| `function_declaration` | `function` |
+| `export_statement` > `function_declaration` | `function` (exported) |
+| `lexical_declaration` with arrow function | `function` |
+| `class_declaration` | `class` |
+| `interface_declaration` | `interface` |
+| `type_alias_declaration` | `type` |
+| `enum_declaration` | `enum` |
+| `lexical_declaration` (const/let non-function) | `constant` or `variable` |
+| `variable_declaration` | `variable` |
+| method inside class body | `method` |
+| `import_statement` | tracked in imports |
+
+Export detection: `export` keyword prefix or `export default`. Named exports from `export { ... }` also tracked.
+
+Import classification: bare specifier (no `.` or `/` prefix) → external. Relative path (`.`, `..`) or alias path → internal. Resolve aliases if tsconfig paths present (best-effort, can skip initially).
+
+**`hashing.ts`** — for file hash: concatenate all symbol AST texts. For symbol hash: use `sym.astText` (plugin strips comments during parse, keeps structure). Both feed into `hashString()`.
+
+**`languageFeatures` extraction:**
+- function/method: `async` (check `async` keyword), `throws` (scan JSDoc `@throws`), `class` (parent class name for methods)
+- class: `extends`, `implements`, constructor params, properties with visibility, method names
+- interface: `members`, `extends`, `structural: false` (TS interfaces nominal-ish)
+- type: `definition` (right-hand side text)
+- enum: `members` with name/value pairs
+- constant/variable: `declarationKind`, `value` if static literal
+
+### Go Plugin
+
+**`parser.ts`** — key node types:
+
+| tree-sitter node type | → FrameSymbol kind |
+|---|---|
+| `function_declaration` | `function` |
+| `method_declaration` | `method` |
+| `type_declaration` > `struct_type` | `struct` |
+| `type_declaration` > `interface_type` | `interface` |
+| `const_declaration` > `const_spec` | `constant` or `enum` (if iota) |
+| `var_declaration` > `var_spec` | `variable` |
+| `import_declaration` | tracked in imports |
+
+Export detection: first character of name is uppercase → exported.
+
+Import classification: compare import path against `go.mod` module path. Starts with module path → internal. Everything else → external. Read `go.mod` once per project (cached).
+
+**`languageFeatures` extraction:**
+- function: `errorReturn` (last return type is `error`), `goroutineHint` (scan body for `go` keyword), `initFunc` (name is `init`)
+- method: `receiver` type + pointer flag
+- struct: `fields` with name, type, exported, tags
+- interface: `members`, `structural: true` (Go interfaces always structural)
+- constant: `value`, `iotaBlock` (name of enclosing const block if has iota)
+- enum: detected when const block uses iota — group into single enum symbol with `iotaBlock` name and members
+
+### `frame-populate` Skill
+
+Claude Code skill file (markdown). Location: distribute as installable skill or place in `.claude/skills/frame-populate.md` for local use.
+
+**Workflow the skill instructs Claude to follow:**
+1. `frame read --json` → get full skeleton
+2. Filter for `purpose: null` entries (skip `parseError` files)
+3. Group by file, process symbols first (bottom-up)
+4. For each batch of ≤10 symbols:
+   - `frame read-file <path> --json` to get source context
+   - Generate purpose for each symbol using plugin's `purposePrompt.symbol` template style
+   - Collect as `PurposePatch[]`
+   - `echo '<json>' | frame write-purposes` to patch
+5. After all symbols in a file done, generate file-level purpose (rollup from symbol purposes)
+6. Patch file purpose via `write-purposes`
+7. Repeat until `needsGeneration === 0`
+
+**Purpose writing style:** caveman — short, dense, no articles, no filler. "validate JWT, return payload or error" not "This function validates a JWT token and returns the payload or an error."
+
+---
+
+## Scaffolding Configs
+
+### `package.json`
+
+```json
+{
+  "name": "frame",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/cli.ts",
+  "bin": { "frame": "src/cli.ts" },
+  "scripts": {
+    "dev": "bun run src/cli.ts",
+    "build": "bun build --compile ./src/cli.ts --outfile frame",
+    "test": "bun test",
+    "lint": "biome check src/",
+    "lint:fix": "biome check --write src/",
+    "format": "biome format --write src/",
+    "update-grammars": "bash scripts/update-grammars.sh"
+  },
+  "dependencies": {
+    "commander": "^13.0.0",
+    "@commander-js/extra-typings": "^13.0.0",
+    "web-tree-sitter": "^0.24.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@types/bun": "latest",
+    "tree-sitter-typescript": "^0.23.0",
+    "tree-sitter-go": "^0.23.0"
+  }
+}
+```
+
+### `tsconfig.json`
+
+```json
+{
+  "compilerOptions": {
+    "lib": ["ESNext"],
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleDetection": "force",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+    "types": ["bun-types"]
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["node_modules", "grammars", ".frame"]
+}
+```
+
+### `biome.json`
+
+Per spec — copy verbatim from spec's lint & format section.
+
+### `scripts/update-grammars.sh`
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+DIR="grammars"
+mkdir -p "$DIR"
+cp node_modules/web-tree-sitter/tree-sitter.wasm "$DIR/"
+# tsx grammar used for both .ts and .tsx — it's a superset
+cp node_modules/tree-sitter-typescript/tree-sitter-tsx.wasm "$DIR/tree-sitter-typescript.wasm"
+cp node_modules/tree-sitter-go/tree-sitter-go.wasm "$DIR/"
+echo "Updated grammar files in $DIR/"
+```
+
+Note: tree-sitter grammar npm packages may not ship prebuilt `.wasm` files. If missing, build with `tree-sitter build --wasm` from the grammar repo. Check npm package contents during scaffolding task and adjust script accordingly.
+
+---
+
+## Testing Strategy
+
+### Unit Tests (deterministic, fast)
+
+| Module | What to test |
+|---|---|
+| `hash.ts` | Deterministic output, base62 encoding, `rawHash` prefix |
+| `lock.ts` | Acquire/release cycle, stale PID detection, timeout behavior, concurrent access |
+| `walker.ts` | Git repo walking, non-git fallback, extra ignore patterns, `.frame/` exclusion |
+| `search.ts` | All scoring rules (exact name=10, path=5, all terms=3, partial=1), export 1.5x multiplier, limit/threshold/filesOnly/symbolsOnly, null purpose handling |
+| `formatter.ts` | Each format function against known FileEntry/FrameRoot inputs. Verify no ANSI codes. Verify `[parse error]` and `[purpose pending]` markers |
+| `frame.ts` `computeStats` | Correct counts for totalFiles, totalSymbols, needsGeneration (excludes parseErrors), parseErrors, languageComposition |
+
+### Plugin Parser Tests (deterministic, require WASM)
+
+Each plugin gets parser + hashing tests using fixture files.
+
+**TypeScript parser tests:**
+- `simple.ts` fixture: functions, const, exports, imports → verify correct symbol count, kinds, names, exported flags, parameters, returns
+- `complex.ts` fixture: class with methods/properties, interface, type alias, enum, generics → verify all `languageFeatures` fields
+- `broken.ts` fixture: unparseable source → verify `ParseResult.ok === false`
+- Import classification: bare specifier → external, relative → internal
+- Hashing: same source → same hash, whitespace/comment change → same hash, code change → different hash
+
+**Go parser tests:**
+- `simple.go`: functions, exported vs unexported, error returns
+- `complex.go`: structs with tags, methods with receivers, interfaces, iota const blocks
+- `broken.go`: parse failure handling
+- Import classification against go.mod module path
+- Hashing stability
+
+### Integration Tests (CLI end-to-end)
+
+Run actual CLI commands against fixture project directories:
+
+```typescript
+import { describe, test, expect } from "bun:test";
+import { $ } from "bun";
+
+describe("CLI", () => {
+  test("generate creates frame.json", async () => {
+    const result = await $`bun run src/cli.ts generate --root tests/fixtures/sample-project`.text();
+    const frame = await Bun.file("tests/fixtures/sample-project/.frame/frame.json").json();
+    expect(frame.version).toBe("1.0.0");
+    expect(frame.files.length).toBeGreaterThan(0);
+  });
+
+  test("read outputs skeleton", async () => { /* ... */ });
+  test("read-file shows symbols", async () => { /* ... */ });
+  test("search finds by name", async () => { /* ... */ });
+  test("search finds by purpose", async () => { /* ... */ });
+  test("api-surface lists exports", async () => { /* ... */ });
+  test("deps shows imports and reverse deps", async () => { /* ... */ });
+  test("update preserves unchanged purposes", async () => { /* ... */ });
+  test("update clears changed purposes", async () => { /* ... */ });
+  test("error: no frame → exit 1", async () => { /* ... */ });
+  test("error: file not in frame → exit 1", async () => { /* ... */ });
+  test("help --agent outputs machine text", async () => { /* ... */ });
+  test("--json flag returns valid JSON", async () => { /* ... */ });
+  test("write-purposes patches frame", async () => { /* ... */ });
+});
+```
+
+### Test Fixtures
+
+Create a small sample project under `tests/fixtures/` with:
+- `sample-project/` — multi-file TypeScript project with imports, exports, classes
+- `sample-go-project/` — multi-file Go project with go.mod
+- Both with intentionally broken files for parse error testing
+- `.gitignore` files for walker testing
+
+### What NOT to Test
+
+- WASM loading internals (trust web-tree-sitter)
+- Bun.hash output values (trust Bun)
+- Commander argument parsing (trust Commander)
+- `frame-populate` skill (LLM-dependent, test manually)
 
 # Tasks
 
-
-
 # Summary
-
-
 
 # Retro
 
