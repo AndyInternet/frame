@@ -2093,7 +2093,7 @@ Create a small sample project under `tests/fixtures/` with:
   - Manual smoke test: `bun -e "import { processFiles } from './src/core/workers.ts'; const r = await processFiles([{path:'tests/fixtures/typescript/simple.ts', source: await Bun.file('tests/fixtures/typescript/simple.ts').text(), pluginId:'typescript'}], {concurrency:1, projectRoot:'.', onProgress:(c,t,p)=>console.log(c,t,p), onError:(p,e)=>console.error(p,e)}); console.log(JSON.stringify(r[0]?.result?.exports))"` prints the exported symbol names from simple.ts
   **Constraints:** Workers must be terminated after processing completes — no leaked threads. Each worker loads its own WASM instance (no shared state). `worker-entry.ts` must not import from plugins directly — uses `getPluginById` from registry.
 
-- [ ] Implement frame orchestration: `src/core/frame.ts` with tests
+- [x] Implement frame orchestration: `src/core/frame.ts` with tests
   **Context:** Central module. `generate()` builds frame from scratch, `update()` syncs to current code preserving unchanged purposes, `loadFrame()` reads frame.json, `writePurposes()` patches purposes via locking, `computeStats()` recalculates root-level stats. Orchestrates walker, workers, lock, and registry.
   **Dependencies:** Task 2 (`schema.ts`, `hash.ts`), Task 3 (`registry.ts`), Task 4 (`lock.ts`), Task 5 (`walker.ts`), Task 8 (`workers.ts`). All must be complete.
   **Scope:** Create these files only:
@@ -2359,3 +2359,10 @@ Create a small sample project under `tests/fixtures/` with:
 - Spec non-null-asserts `getPluginById(req.pluginId)!`. Added null guard returning `parseError` response instead — safer, avoids Biome lint.
 - No deviations from planned contracts. All types, signatures, and behavior match source code exactly.
 - Smoke test confirms full pipeline: worker loads WASM, gets plugin from registry, parses TypeScript, returns exports `["MAX_RETRIES","greet","add"]`.
+
+## Task 9 — Frame orchestration
+- Biome flags `noNonNullAssertion` on `getPluginForFile(relPath)!` even though preceding filter guarantees non-null. Fixed with explicit null guard + continue.
+- Biome import sorting: type imports sort alphabetically before value imports within same specifier — `type FileEntry` before `FrameNotFoundError`.
+- `writePurposes` only recomputes `needsGeneration` stat per spec. Other stats (totalFiles, totalSymbols, etc.) unchanged by purpose patching.
+- Parse-error files get empty hash (`""`) since worker-entry returns no `result` for failures. Works for update comparison — empty === empty preserves (no purposes to preserve anyway since parseError files have none).
+- All 8 tests pass in 246ms. Worker pool spins up fast enough for integration tests without mocking.
