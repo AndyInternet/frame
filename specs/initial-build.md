@@ -1921,7 +1921,7 @@ Create a small sample project under `tests/fixtures/` with:
   - `bun run build` is expected to fail (no `src/cli.ts` yet) — that's fine
   **Constraints:** Do not create any `src/*.ts` files. Do not install deps beyond what's in the plan's `package.json`.
 
-- [ ] Implement core types and hash utility: `src/core/schema.ts` and `src/core/hash.ts` with tests
+- [x] Implement core types and hash utility: `src/core/schema.ts` and `src/core/hash.ts` with tests
   **Context:** These are foundational modules with zero internal dependencies. Every other module imports from `schema.ts`. `hash.ts` wraps `Bun.hash` in base62 encoding.
   **Scope:** Create these files only:
   - `src/core/schema.ts`
@@ -2316,3 +2316,10 @@ Create a small sample project under `tests/fixtures/` with:
 - All scaffolding already done by prior run. WASM paths from spec matched actual npm package layout — no script adjustments needed.
 - `tree-sitter-typescript` npm package ships `tree-sitter-tsx.wasm` at root, copied as `tree-sitter-typescript.wasm` per spec. No issues.
 - `web-tree-sitter` ships `tree-sitter.wasm` at root. No issues.
+
+## Task 2 — Core types and hash utility
+- Copied types verbatim from spec. No deviations from planned contracts.
+- Biome formatter wanted BASE62 const on single line — adjusted.
+- `schema.ts` has zero runtime logic except two error classes and one constant, as specified.
+- `hash.ts` has zero imports, uses global `Bun.hash` as specified.
+- All 6 hash tests pass.
