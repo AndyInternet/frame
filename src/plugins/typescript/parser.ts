@@ -307,6 +307,13 @@ export async function parse(
           }
         }
       }
+      if (child.type === "implements_clause") {
+        for (const sub of child.namedChildren) {
+          if (sub.type === "type_identifier" || sub.type === "identifier") {
+            implementsList.push(sub.text);
+          }
+        }
+      }
     }
 
     let constructorParams: Parameter[] | undefined;

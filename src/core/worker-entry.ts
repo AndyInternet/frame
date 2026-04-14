@@ -1,3 +1,4 @@
+import { rawHash } from "./hash.ts";
 import { getPluginById } from "./registry.ts";
 import type { WorkerRequest, WorkerResponse } from "./schema.ts";
 import { initParser, loadLanguage } from "./wasm-loader.ts";
@@ -13,6 +14,7 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
       pluginId: req.pluginId,
       pluginVersion: "unknown",
       parseError: `Unknown plugin: ${req.pluginId}`,
+      rawHash: rawHash(req.source),
     } satisfies WorkerResponse);
     return;
   }
@@ -27,6 +29,7 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
       pluginId: req.pluginId,
       pluginVersion: plugin.version,
       parseError: result.error,
+      rawHash: rawHash(req.source),
     } satisfies WorkerResponse);
     return;
   }
