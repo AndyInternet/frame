@@ -1889,7 +1889,7 @@ Create a small sample project under `tests/fixtures/` with:
 - `frame-populate` skill (LLM-dependent, test manually)
 # Tasks
 
-- [ ] Scaffold project: `package.json`, `tsconfig.json`, `biome.json`, grammar WASM setup, directory structure
+- [x] Scaffold project: `package.json`, `tsconfig.json`, `biome.json`, grammar WASM setup, directory structure
   **Context:** Greenfield repo at worktree root. No `src/`, `grammars/`, `scripts/`, or `tests/` directories exist yet. Only `.gitignore`, `LICENSE`, `README.md`, and `specs/` present.
   **Scope:** Create these files (no others):
   - `package.json`
@@ -2311,3 +2311,8 @@ Create a small sample project under `tests/fixtures/` with:
 - **Start:**
 - **Stop:**
 - **Continue:**
+
+## Task 1 — Scaffold
+- All scaffolding already done by prior run. WASM paths from spec matched actual npm package layout — no script adjustments needed.
+- `tree-sitter-typescript` npm package ships `tree-sitter-tsx.wasm` at root, copied as `tree-sitter-typescript.wasm` per spec. No issues.
+- `web-tree-sitter` ships `tree-sitter.wasm` at root. No issues.

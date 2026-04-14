@@ -1,0 +1,27 @@
+{
+  "name": "frame",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/cli.ts",
+  "bin": { "frame": "src/cli.ts" },
+  "scripts": {
+    "dev": "bun run src/cli.ts",
+    "build": "bun build --compile ./src/cli.ts --outfile frame",
+    "test": "bun test",
+    "lint": "biome check src/",
+    "lint:fix": "biome check --write src/",
+    "format": "biome format --write src/",
+    "update-grammars": "bash scripts/update-grammars.sh"
+  },
+  "dependencies": {
+    "commander": "^13.0.0",
+    "@commander-js/extra-typings": "^13.0.0",
+    "web-tree-sitter": "^0.24.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@types/bun": "latest",
+    "tree-sitter-typescript": "^0.23.0",
+    "tree-sitter-go": "^0.23.0"
+  }
+}
