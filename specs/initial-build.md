@@ -2005,7 +2005,7 @@ Create a small sample project under `tests/fixtures/` with:
   **Acceptance criteria:** `bun test tests/core/walker.test.ts` passes all tests. `bunx biome check src/core/walker.ts` passes.
   **Constraints:** Do not import from `registry.ts` — walker has no language knowledge, returns all file paths. Language filtering happens in `frame.ts`.
 
-- [ ] Implement TypeScript plugin: parser, hashing, prompts, and full `index.ts`
+- [x] Implement TypeScript plugin: parser, hashing, prompts, and full `index.ts`
   **Context:** First real language plugin. Parses TypeScript/TSX files via tree-sitter AST, extracts symbols with full `languageFeatures`, classifies imports, provides purpose prompt templates. Replaces the stub `index.ts` from Task 3.
   **Dependencies:** Task 2 (`schema.ts`, `hash.ts`), Task 3 (`wasm-loader.ts` for loading grammar, stub `index.ts` to replace). Task 1 (fixtures in `tests/fixtures/typescript/`).
   **Scope:** Create/modify these files only:
@@ -2339,3 +2339,9 @@ Create a small sample project under `tests/fixtures/` with:
 - Spec says test `.git/` exclusion in non-git mode, but creating `.git/HEAD` in temp dir triggers git detection (stat succeeds). Split into separate concerns: node_modules exclusion tested without .git, git mode tested separately with real `git init`.
 - No imports from `registry.ts` per constraint. Walker returns all paths; language filtering deferred to `frame.ts`.
 - All 10 tests pass. Biome clean.
+
+## Task 6 — TypeScript plugin
+- Task 3 stubs were nearly complete implementations — parser, hashing, prompts, index all had working code. Only fix needed: 4 Biome `noNonNullAssertion` lint errors in parser.ts (tree-sitter `.namedChild(i)!` calls). Fixed by adding null checks instead.
+- All 26 tests pass across parser.test.ts and hashing.test.ts. No deviations from planned contracts.
+- `broken.ts` fixture correctly triggers `hasError` on tree-sitter root node, returning error strings with line/column positions.
+- Comment stripping approach: recursively find `comment` type nodes in AST, remove their text ranges from parent text, normalize whitespace. Works for both `//` and `/* */` styles.
