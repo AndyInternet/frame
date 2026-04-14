@@ -1981,7 +1981,7 @@ Create a small sample project under `tests/fixtures/` with:
   **Acceptance criteria:** `bun test tests/core/lock.test.ts` passes all tests. `bunx biome check src/core/lock.ts` passes.
   **Constraints:** Lock file path is always `<dataDir>/frame.lock`. Do not use `flock` or other OS-level locking — PID-based per spec.
 
-- [ ] Implement file walker: `src/core/walker.ts` with tests
+- [x] Implement file walker: `src/core/walker.ts` with tests
   **Context:** Walks project directory, returns relative file paths. Two strategies: git-based (`git ls-files`) when `.git` exists, recursive `readdir` fallback when no git. Filters out `.frame/` and applies extra ignore globs.
   **Dependencies:** Task 1 (fixture files exist).
   **Scope:** Create these files only:
@@ -2333,3 +2333,9 @@ Create a small sample project under `tests/fixtures/` with:
 - Implementation matches spec exactly. PID-based lock with `{ flag: 'wx' }` exclusive create, stale PID detection via `process.kill(pid, 0)`, retry loop with 100ms interval.
 - Biome wanted single-line import for `node:fs` — adjusted.
 - All 5 tests pass. No deviations from planned contracts.
+
+## Task 5 — File walker
+- `Bun.Glob("*.test.ts")` doesn't match paths with directory prefixes like `src/app.test.ts` — `*` doesn't cross path separators. Fixed by also matching glob against `basename(path)`. This makes simple patterns like `*.test.ts` work as users expect (matching at any depth).
+- Spec says test `.git/` exclusion in non-git mode, but creating `.git/HEAD` in temp dir triggers git detection (stat succeeds). Split into separate concerns: node_modules exclusion tested without .git, git mode tested separately with real `git init`.
+- No imports from `registry.ts` per constraint. Walker returns all paths; language filtering deferred to `frame.ts`.
+- All 10 tests pass. Biome clean.
