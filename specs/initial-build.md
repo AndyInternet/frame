@@ -1958,7 +1958,7 @@ Create a small sample project under `tests/fixtures/` with:
   - `bun -e "import { getPluginForFile, getAllPlugins } from './src/core/registry.ts'; console.log(getPluginForFile('foo.ts')?.id, getPluginForFile('bar.go')?.id, getPluginForFile('x.rs'), getAllPlugins().length)"` prints `typescript go null 2`
   **Constraints:** `wasm-loader.ts` must use static imports (not dynamic) for WASM files — required for `bun build --compile` embedding. Plugin stubs are temporary — later tasks replace method bodies.
 
-- [ ] Implement file locking: `src/core/lock.ts` with tests
+- [x] Implement file locking: `src/core/lock.ts` with tests
   **Context:** Lock protocol protects `.frame/frame.json` from concurrent writes. Used by `frame.ts` generate/update and `writePurposes`. Lock file is `.frame/frame.lock` containing PID as text.
   **Dependencies:** Task 2 (`schema.ts` exists).
   **Scope:** Create these files only:
@@ -2328,3 +2328,8 @@ Create a small sample project under `tests/fixtures/` with:
 - `Parser.Language.load()` in web-tree-sitter v0.24 expects file path string, not ArrayBuffer. Spec example showed reading into buffer then passing to `load()` — that causes `ENAMETOOLONG`. Fixed by passing embedded path directly. Same behavior after `bun build --compile` since `import with {type:"file"}` gives embedded path either way.
 - Biome import sorting requires alphabetical order — grammar imports reordered (go, ts, core) instead of spec's logical order (core, ts, go). No functional impact.
 - Plugin stubs use `_param` prefix convention for unused params to satisfy linting.
+
+## Task 4 — File locking
+- Implementation matches spec exactly. PID-based lock with `{ flag: 'wx' }` exclusive create, stale PID detection via `process.kill(pid, 0)`, retry loop with 100ms interval.
+- Biome wanted single-line import for `node:fs` — adjusted.
+- All 5 tests pass. No deviations from planned contracts.
