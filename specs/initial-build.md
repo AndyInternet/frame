@@ -2078,7 +2078,7 @@ Create a small sample project under `tests/fixtures/` with:
   - Missing `go.mod` → treat all imports as external
   **Constraints:** Parser receives `Parser.Language` from core. Tree-sitter node type names must match tree-sitter-go grammar. `go.mod` read should be cached per project root (read once, reuse).
 
-- [ ] Implement worker pool: `src/core/workers.ts` and `src/core/worker-entry.ts`
+- [x] Implement worker pool: `src/core/workers.ts` and `src/core/worker-entry.ts`
   **Context:** Bun worker threads for parallel file parsing. Pool dispatches `WorkerRequest` messages, collects `WorkerResponse` results. Worker entry is standalone — loads WASM, gets plugin, runs parse pipeline per file.
   **Dependencies:** Task 2 (`schema.ts` types), Task 3 (`wasm-loader.ts`, `registry.ts`), Task 6 (TypeScript plugin — for integration testing), Task 7 (Go plugin).
   **Scope:** Create these files only:
@@ -2353,3 +2353,9 @@ Create a small sample project under `tests/fixtures/` with:
 - `classifyImport` reads `go.mod` synchronously via `node:fs` since interface is sync. Cached per projectRoot in module-level Map.
 - Iota detection: scans const_spec expression_lists for `iota` node type. Groups into single enum symbol named after type (e.g., `Color`) or first constant name.
 - Struct tag parsing: regex `(\w+):"([^"]*)"` against raw_string_literal_content text. Works for standard Go struct tags.
+
+## Task 8 — Worker pool
+- Spec uses `declare var self: Worker` but Biome flags `noVar`. Changed to `declare const self: Worker` — works same for ambient declarations.
+- Spec non-null-asserts `getPluginById(req.pluginId)!`. Added null guard returning `parseError` response instead — safer, avoids Biome lint.
+- No deviations from planned contracts. All types, signatures, and behavior match source code exactly.
+- Smoke test confirms full pipeline: worker loads WASM, gets plugin from registry, parses TypeScript, returns exports `["MAX_RETRIES","greet","add"]`.
