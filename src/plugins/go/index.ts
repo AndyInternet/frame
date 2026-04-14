@@ -1,10 +1,18 @@
 import type Parser from "web-tree-sitter";
 import type {
   LanguagePlugin,
-  ParseResult,
   ParsedFile,
   RawSymbol,
 } from "../../core/schema.ts";
+import {
+  hashFile as computeFileHash,
+  hashSymbol as computeSymbolHash,
+} from "./hashing.ts";
+import {
+  classifyImport as classifyGoImport,
+  parse as parseFile,
+} from "./parser.ts";
+import { purposePrompt } from "./prompts.ts";
 
 export const goPlugin: LanguagePlugin = {
   id: "go",
@@ -22,30 +30,27 @@ export const goPlugin: LanguagePlugin = {
   ],
 
   parse(
-    _filePath: string,
-    _source: string,
-    _language: Parser.Language,
-  ): Promise<ParseResult> {
-    throw new Error("not implemented");
+    filePath: string,
+    source: string,
+    language: Parser.Language,
+  ): Promise<import("../../core/schema.ts").ParseResult> {
+    return parseFile(filePath, source, language);
   },
 
-  hashFile(_parsed: ParsedFile): string {
-    throw new Error("not implemented");
+  hashFile(parsed: ParsedFile): string {
+    return computeFileHash(parsed);
   },
 
-  hashSymbol(_symbol: RawSymbol): string {
-    throw new Error("not implemented");
+  hashSymbol(symbol: RawSymbol): string {
+    return computeSymbolHash(symbol);
   },
 
   classifyImport(
-    _importPath: string,
-    _projectRoot: string,
+    importPath: string,
+    projectRoot: string,
   ): "internal" | "external" {
-    throw new Error("not implemented");
+    return classifyGoImport(importPath, projectRoot);
   },
 
-  purposePrompt: {
-    symbol: "not implemented",
-    file: "not implemented",
-  },
+  purposePrompt,
 };

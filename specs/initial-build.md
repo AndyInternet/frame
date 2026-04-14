@@ -2037,7 +2037,7 @@ Create a small sample project under `tests/fixtures/` with:
   - Files with only imports and no declarations → empty symbols array, imports populated
   **Constraints:** Parser receives `Parser.Language` from core — never calls `loadLanguage` itself. All tree-sitter node type names must match the actual TSX grammar (verify against tree-sitter-typescript docs/playground). `astText` for hashing must exclude comments but include structure — use node text then strip comment substrings, or collect non-comment child text.
 
-- [ ] Implement Go plugin: parser, hashing, prompts, and full `index.ts`
+- [x] Implement Go plugin: parser, hashing, prompts, and full `index.ts`
   **Context:** Second language plugin. Parses Go files via tree-sitter AST, extracts symbols with Go-specific `languageFeatures`, classifies imports against `go.mod` module path. Replaces the stub `index.ts` from Task 3.
   **Dependencies:** Task 2 (`schema.ts`, `hash.ts`), Task 3 (`wasm-loader.ts`, stub `index.ts` to replace). Task 1 (fixtures in `tests/fixtures/go/`).
   **Scope:** Create/modify these files only:
@@ -2345,3 +2345,11 @@ Create a small sample project under `tests/fixtures/` with:
 - All 26 tests pass across parser.test.ts and hashing.test.ts. No deviations from planned contracts.
 - `broken.ts` fixture correctly triggers `hasError` on tree-sitter root node, returning error strings with line/column positions.
 - Comment stripping approach: recursively find `comment` type nodes in AST, remove their text ranges from parent text, normalize whitespace. Works for both `//` and `/* */` styles.
+
+## Task 7 — Go plugin
+- Task 3 stubs were fully working implementations — parser.ts, hashing.ts, prompts.ts, index.ts all had complete code. All 27 tests pass. Zero changes needed.
+- `extractReturns` handles both single return (type_identifier after param_list) and multiple returns (parameter_list with parameter_declaration children). Correctly skips receiver param_list for method_declaration.
+- Import path extraction uses `interpreted_string_literal_content` node (child of `interpreted_string_literal`), not quote-stripping.
+- `classifyImport` reads `go.mod` synchronously via `node:fs` since interface is sync. Cached per projectRoot in module-level Map.
+- Iota detection: scans const_spec expression_lists for `iota` node type. Groups into single enum symbol named after type (e.g., `Color`) or first constant name.
+- Struct tag parsing: regex `(\w+):"([^"]*)"` against raw_string_literal_content text. Works for standard Go struct tags.
