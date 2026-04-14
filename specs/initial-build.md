@@ -2265,7 +2265,7 @@ Create a small sample project under `tests/fixtures/` with:
   - `search` with no results → empty output, exit code 0
   **Constraints:** CLI must work both via `bun run src/cli.ts` and compiled binary. All user-facing output goes to stdout. Progress/errors go to stderr. `--json` returns raw JSON (not formatted text) for all read commands.
 
-- [ ] Create `frame-populate` skill file
+- [x] Create `frame-populate` skill file
   **Context:** Claude Code skill file that instructs Claude to fill missing `purpose` fields in frame.json. Not executable code — markdown instructions for an LLM agent.
   **Dependencies:** Task 12 (CLI complete — skill references CLI commands).
   **Scope:** Create this file only:
@@ -2388,3 +2388,8 @@ Create a small sample project under `tests/fixtures/` with:
 - `generate`/`update` don't expose `onProgress` callback through `FrameOptions` — progress reporting hardcoded as no-op in `frame.ts`. CLI reports stats to stderr after completion instead (`Generated: N files, N symbols`). Tests validate this.
 - `write-purposes` with empty stdin: `Bun.stdin.text()` returns empty string, early return before JSON.parse. Works as no-op.
 - All 17 integration tests pass. Biome clean. `bun run build` compiles to `./frame` binary. Zero changes required.
+
+## Task 13 — frame-populate skill
+- Markdown skill file, no executable code. Content copied from spec verbatim.
+- `.claude/` directory didn't exist — created `.claude/skills/` path.
+- No deviations from spec. All 6 workflow steps, frontmatter, and rules match exactly.
