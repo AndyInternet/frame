@@ -2143,7 +2143,7 @@ Create a small sample project under `tests/fixtures/` with:
   - `writePurposes` with patch for non-existent symbol → skip silently
   **Constraints:** All frame writes use atomic rename pattern (write `.tmp`, rename). `generate` always creates fresh — discards existing frame. `update` preserves purposes for unchanged entries. Do not import plugin modules directly — use registry.
 
-- [ ] Implement search scoring: `src/core/search.ts` with tests
+- [x] Implement search scoring: `src/core/search.ts` with tests
   **Context:** Search algorithm scores files and symbols against query terms. Exact weights and multiplier defined in spec. Used by `frame search` CLI command.
   **Dependencies:** Task 2 (`schema.ts` types — `FrameRoot`, `SearchResult`, `SearchOptions`).
   **Scope:** Create these files only:
@@ -2366,3 +2366,10 @@ Create a small sample project under `tests/fixtures/` with:
 - `writePurposes` only recomputes `needsGeneration` stat per spec. Other stats (totalFiles, totalSymbols, etc.) unchanged by purpose patching.
 - Parse-error files get empty hash (`""`) since worker-entry returns no `result` for failures. Works for update comparison — empty === empty preserves (no purposes to preserve anyway since parseError files have none).
 - All 8 tests pass in 246ms. Worker pool spins up fast enough for integration tests without mocking.
+
+## Task 10 — Search scoring
+- All types matched planned contracts exactly — `SearchResult`, `SearchOptions`, `FrameRoot`, `FileEntry`, `FrameSymbol` used as-is from schema.ts.
+- Biome formatter wanted single-line method chain for `tokenize()` — adjusted from multiline.
+- Scoring weights implemented per spec: exact name 10, path substring 5, all-terms-in-purpose bonus 3, partial purpose 1/term, exported multiplier 1.5x.
+- Purpose scoring uses all-or-nothing branch: if all terms found → 3 bonus (no per-term), else → 1 per matched term. Spec ambiguity: "all terms bonus" and "partial per term" are mutually exclusive paths.
+- All 17 tests pass. Biome clean.
