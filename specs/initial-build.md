@@ -2179,7 +2179,7 @@ Create a small sample project under `tests/fixtures/` with:
   **Acceptance criteria:** `bun test tests/core/search.test.ts` passes all tests. `bunx biome check src/core/search.ts` passes.
   **Constraints:** Scoring must match spec weights exactly. Do not add additional scoring heuristics beyond what's specified.
 
-- [ ] Implement output formatter: `src/core/formatter.ts` with tests
+- [x] Implement output formatter: `src/core/formatter.ts` with tests
   **Context:** All read commands produce plain text output (no ANSI). Each formatter takes typed data, returns string. `--json` mode handled in CLI (just `JSON.stringify`) — formatter only does text.
   **Dependencies:** Task 2 (`schema.ts` types).
   **Scope:** Create these files only:
@@ -2373,3 +2373,10 @@ Create a small sample project under `tests/fixtures/` with:
 - Scoring weights implemented per spec: exact name 10, path substring 5, all-terms-in-purpose bonus 3, partial purpose 1/term, exported multiplier 1.5x.
 - Purpose scoring uses all-or-nothing branch: if all terms found → 3 bonus (no per-term), else → 1 per matched term. Spec ambiguity: "all terms bonus" and "partial per term" are mutually exclusive paths.
 - All 17 tests pass. Biome clean.
+
+## Task 11 — Output formatter
+- Spec only gives per-command help text examples for `read-file`, `search`, and `deps`. Constructed help text for `generate`, `update`, `read`, and `api-surface` following same pattern (ARGUMENTS, FLAGS, OUTPUT, AGENT HINT) based on available spec info.
+- `[parse error]` marker rendered by embedding `] [parse error` inside language tag bracket — produces `[typescript] [parse error]` naturally.
+- No deviations from schema.ts contracts. All types match exactly.
+- Biome flagged template literal without interpolation and ternary line length — both fixed.
+- All 36 tests pass. Biome clean.
