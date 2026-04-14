@@ -1,5 +1,5 @@
 ---
-status: plan
+status: building
 id: initial-build
 target-branch: main
 ---
@@ -805,8 +805,7 @@ interface LanguagePlugin {
   hashFile(parsed: ParsedFile): string;
   hashSymbol(symbol: RawSymbol): string;
 
-  // export detection — plugin owns this entirely
-  isExported(symbol: RawSymbol): boolean;
+  // export detection — parser sets RawSymbol.exported directly (no separate method)
 
   // import classification — plugin owns the heuristic
   classifyImport(
@@ -877,7 +876,6 @@ Grammar `.wasm` in `grammars/` always committed. Binary but small (200–500KB e
 # Attachments
 
 # Implementation Plan
-
 ## Approach
 
 Greenfield build. Dependencies flow downward: CLI → core → plugins. Build bottom-up.
@@ -1065,7 +1063,7 @@ export interface LanguagePlugin {
   parse(filePath: string, source: string, language: Parser.Language): Promise<ParseResult>;
   hashFile(parsed: ParsedFile): string;
   hashSymbol(symbol: RawSymbol): string;
-  isExported(symbol: RawSymbol): boolean;
+  // No isExported() — parser sets RawSymbol.exported directly during parse
   classifyImport(importPath: string, projectRoot: string): "internal" | "external";
   purposePrompt: { symbol: string; file: string };
 }
@@ -1119,6 +1117,17 @@ export interface PurposePatch {
   path: string;
   symbolName?: string; // omit for file-level purpose
   purpose: string;
+}
+
+// --- Error Types ---
+export class FrameNotFoundError extends Error {
+  constructor() { super("No frame found. Run: frame generate"); this.name = "FrameNotFoundError"; }
+}
+export class FileNotInFrameError extends Error {
+  constructor(public path: string) {
+    super(`File not in frame: ${path}. Check path is relative to project root and file has a supported language extension`);
+    this.name = "FileNotInFrameError";
+  }
 }
 
 // --- Constants ---
@@ -1394,6 +1403,8 @@ export async function processFiles(
   // Dispatch files across workers, collect results via message handlers
   // Each worker processes one file at a time, gets next from queue on completion
   // Return all WorkerResponse[] when queue empty
+  // IMPORTANT: terminate all workers before returning
+  for (const w of workers) w.terminate();
 }
 ```
 
@@ -1519,11 +1530,17 @@ const program = new Command()
 
 program.command("generate").description("build frame from scratch")
   .option("--force-unlock", "clear stale frame lock")
-  .action(async (cmdOpts) => { /* ... */ });
+  .action(async (cmdOpts) => {
+    if (cmdOpts.forceUnlock) await forceUnlock(dataDir);
+    /* generate(opts) → write frame.json */
+  });
 
 program.command("update").description("re-hash files, invalidate changed purposes")
   .option("--force-unlock", "clear stale frame lock")
-  .action(async (cmdOpts) => { /* ... */ });
+  .action(async (cmdOpts) => {
+    if (cmdOpts.forceUnlock) await forceUnlock(dataDir);
+    /* update(opts) → write frame.json */
+  });
 
 program.command("read").description("list all files with purposes")
   .action(async () => { /* loadFrame → formatSkeleton or JSON.stringify */ });
@@ -1649,6 +1666,60 @@ Claude Code skill file (markdown). Location: distribute as installable skill or 
 
 **Purpose writing style:** caveman — short, dense, no articles, no filler. "validate JWT, return payload or error" not "This function validates a JWT token and returns the payload or an error."
 
+**Actual skill file content (`frame-populate.md`):**
+
+````markdown
+---
+name: frame-populate
+description: Fill missing purpose fields in .frame/frame.json — symbols first, then file rollups
+---
+
+# frame-populate
+
+Generate purpose strings for all unpopulated entries in the project frame.
+
+## Rules
+
+- Write caveman: short, dense, no articles, no filler
+- "validate JWT, return payload or error" YES
+- "This function validates a JSON Web Token and returns the payload or an error" NO
+- Symbols first, file purpose last (bottom-up rollup)
+- Batch ≤10 symbol patches per write-purposes call
+- Skip files with parseError — nothing to describe
+- If a symbol's role is obvious from its name + signature, still write a purpose — but keep it tight
+
+## Workflow
+
+1. Get current frame state:
+   ```bash
+   frame read --json
+   ```
+
+2. Parse the JSON. Collect files where `purpose === null` or any symbol has `purpose === null`. Exclude files where `parseError !== null`.
+
+3. For each file needing purposes, process symbols first:
+   ```bash
+   frame read-file <path> --json
+   ```
+   Read the full symbol detail. For each symbol with `purpose: null`, write a caveman purpose based on the symbol's name, kind, parameters, returns, and languageFeatures.
+
+4. Batch symbol purposes (up to 10) into a JSON array of `PurposePatch` objects and pipe to CLI:
+   ```bash
+   echo '[{"path":"<file>","symbolName":"<name>","purpose":"<text>"},...]' | frame write-purposes
+   ```
+
+5. After all symbols in a file are populated, write the file-level purpose — a one-line rollup summarizing what the file does based on its symbol purposes:
+   ```bash
+   echo '[{"path":"<file>","purpose":"<rollup text>"}]' | frame write-purposes
+   ```
+
+6. Repeat for all files. When done, verify:
+   ```bash
+   frame read --json
+   ```
+   Confirm `needsGeneration === 0`.
+````
+
 ---
 
 ## Scaffolding Configs
@@ -1766,10 +1837,19 @@ Each plugin gets parser + hashing tests using fixture files.
 Run actual CLI commands against fixture project directories:
 
 ```typescript
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, afterAll } from "bun:test";
 import { $ } from "bun";
+import { rm } from "node:fs/promises";
+
+const FIXTURE_DIRS = ["tests/fixtures/sample-project", "tests/fixtures/sample-go-project"];
 
 describe("CLI", () => {
+  afterAll(async () => {
+    for (const dir of FIXTURE_DIRS) {
+      await rm(`${dir}/.frame`, { recursive: true, force: true });
+    }
+  });
+
   test("generate creates frame.json", async () => {
     const result = await $`bun run src/cli.ts generate --root tests/fixtures/sample-project`.text();
     const frame = await Bun.file("tests/fixtures/sample-project/.frame/frame.json").json();
@@ -1807,10 +1887,424 @@ Create a small sample project under `tests/fixtures/` with:
 - Bun.hash output values (trust Bun)
 - Commander argument parsing (trust Commander)
 - `frame-populate` skill (LLM-dependent, test manually)
-
 # Tasks
 
+- [ ] Scaffold project: `package.json`, `tsconfig.json`, `biome.json`, grammar WASM setup, directory structure
+  **Context:** Greenfield repo at worktree root. No `src/`, `grammars/`, `scripts/`, or `tests/` directories exist yet. Only `.gitignore`, `LICENSE`, `README.md`, and `specs/` present.
+  **Scope:** Create these files (no others):
+  - `package.json`
+  - `tsconfig.json`
+  - `biome.json`
+  - `scripts/update-grammars.sh`
+  - `grammars/` directory (populated by running `update-grammars.sh`)
+  - Empty directory stubs: `src/core/`, `src/plugins/typescript/`, `src/plugins/go/`, `tests/core/`, `tests/plugins/typescript/`, `tests/plugins/go/`, `tests/integration/`, `tests/fixtures/typescript/`, `tests/fixtures/go/`
+  **Details:**
+  - `package.json` contents per Implementation Plan → Scaffolding Configs section. Use exact deps and scripts listed.
+  - `tsconfig.json` per Implementation Plan → Scaffolding Configs section. Exact contents.
+  - `biome.json` per spec lint & format section. Exact contents.
+  - `scripts/update-grammars.sh` per Implementation Plan → Scaffolding Configs section. Make executable (`chmod +x`). Note: tree-sitter grammar npm packages may not ship prebuilt `.wasm` files in the expected locations. Inspect `node_modules/web-tree-sitter/`, `node_modules/tree-sitter-typescript/`, and `node_modules/tree-sitter-go/` to find actual `.wasm` paths. Adjust the script if needed so it copies the correct files. The tsx grammar must be copied as `tree-sitter-typescript.wasm` (tsx is superset of ts).
+  - Run `bun install` then `bash scripts/update-grammars.sh` to populate `grammars/`.
+  - For empty directory stubs, create a `.gitkeep` file in each.
+  - Create test fixture files per Implementation Plan → Test Fixtures:
+    - `tests/fixtures/typescript/simple.ts` — 2-3 exported functions, 1 const, 1 import from relative path, 1 import from bare specifier
+    - `tests/fixtures/typescript/complex.ts` — class with methods/properties, interface, type alias, enum, generics, async function
+    - `tests/fixtures/typescript/broken.ts` — intentionally unparseable (malformed syntax)
+    - `tests/fixtures/go/simple.go` — package main, 2-3 exported functions, 1 unexported, error return
+    - `tests/fixtures/go/complex.go` — struct with tags, method with pointer receiver, interface, iota const block
+    - `tests/fixtures/go/broken.go` — intentionally unparseable Go
+    - `tests/fixtures/.gitignore` — contains `ignored-dir/` to test walker ignore behavior
+  **Acceptance criteria:**
+  - `bun install` succeeds with zero errors
+  - `bash scripts/update-grammars.sh` succeeds and `grammars/tree-sitter.wasm`, `grammars/tree-sitter-typescript.wasm`, `grammars/tree-sitter-go.wasm` all exist as non-empty files
+  - `bunx biome check --no-errors-on-unmatched src/` runs without config errors
+  - All fixture files exist and are non-empty
+  - `bun run build` is expected to fail (no `src/cli.ts` yet) — that's fine
+  **Constraints:** Do not create any `src/*.ts` files. Do not install deps beyond what's in the plan's `package.json`.
+
+- [ ] Implement core types and hash utility: `src/core/schema.ts` and `src/core/hash.ts` with tests
+  **Context:** These are foundational modules with zero internal dependencies. Every other module imports from `schema.ts`. `hash.ts` wraps `Bun.hash` in base62 encoding.
+  **Scope:** Create these files only:
+  - `src/core/schema.ts`
+  - `src/core/hash.ts`
+  - `tests/core/hash.test.ts`
+  **Details:**
+  - `src/core/schema.ts` — copy exact type definitions from Implementation Plan → Shared Contracts → Core Types section. Includes: `CoreSymbolKind`, `SymbolKind`, `Parameter`, `FrameSymbol`, `FileEntry`, `FrameRoot`, `RawSymbol`, `ParsedFile`, `ParseResult`, `LanguagePlugin`, `WorkerRequest`, `WorkerResponse`, `WorkerFileResult`, `SearchResult`, `SearchOptions`, `PurposePatch`, `FrameNotFoundError`, `FileNotInFrameError`, `FRAME_VERSION`. All types exported. No runtime logic except the two error classes.
+  - `src/core/hash.ts` — copy exact implementation from Implementation Plan → Shared Contracts → Hash Utility section. Exports `hashString(input: string): string` and `rawHash(source: string): string`. Uses `Bun.hash` → `BigInt` → base62 encoding with charset `0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz`.
+  - `tests/core/hash.test.ts` — test:
+    - `hashString` returns same output for same input (deterministic)
+    - `hashString` returns different output for different inputs
+    - `hashString` returns non-empty string
+    - `hashString` output contains only base62 chars
+    - `rawHash` returns string starting with `"raw:"`
+    - `rawHash("hello")` has format `raw:<base62string>`
+  **Acceptance criteria:** `bun test tests/core/hash.test.ts` passes all tests. `bunx biome check src/core/schema.ts src/core/hash.ts` passes.
+  **Constraints:** `schema.ts` must have no imports except `type Parser from "web-tree-sitter"` (type-only). `hash.ts` must have no imports (uses global `Bun.hash`).
+
+- [ ] Implement WASM loader and plugin registry: `src/core/wasm-loader.ts` and `src/core/registry.ts`
+  **Context:** `wasm-loader.ts` initializes web-tree-sitter runtime and loads grammar WASM files. `registry.ts` maps file extensions to language plugins. Both are imported by worker-entry and frame orchestration. These need stub plugins to exist — create minimal stubs.
+  **Dependencies:** Task 1 (grammars exist in `grammars/`), Task 2 (`schema.ts` types exist).
+  **Scope:** Create these files only:
+  - `src/core/wasm-loader.ts`
+  - `src/core/registry.ts`
+  - `src/plugins/typescript/index.ts` (minimal stub exporting `typescriptPlugin` satisfying `LanguagePlugin` interface — all methods can throw "not implemented")
+  - `src/plugins/go/index.ts` (minimal stub exporting `goPlugin` satisfying `LanguagePlugin` interface — all methods can throw "not implemented")
+  **Details:**
+  - `src/core/wasm-loader.ts` — per Implementation Plan → Module Implementation Notes → wasm-loader.ts. Static imports with `with { type: "file" }` for all three WASM files. `initParser()` calls `Parser.init()` with the core WASM binary. `loadLanguage(grammarWasmFile)` loads a grammar by registry key. Idempotent init via `initialized` flag. Exports: `initParser`, `loadLanguage`.
+  - `src/core/registry.ts` — per Implementation Plan → Module Implementation Notes → registry.ts. Imports `typescriptPlugin` from `../plugins/typescript/index.ts` and `goPlugin` from `../plugins/go/index.ts`. Builds `extMap` from plugin `fileExtensions`. Exports: `getPluginForFile(filePath)`, `getPluginById(id)`, `getAllPlugins()`.
+  - Plugin stubs: each must export a const implementing `LanguagePlugin` from `../../core/schema.ts`. TypeScript stub: `id: "typescript"`, `version: "0.1.0"`, `fileExtensions: [".ts", ".tsx"]`, `grammarWasmFile: "tree-sitter-typescript.wasm"`, `symbolKinds: ["function", "method", "class", "interface", "type", "enum", "constant", "variable"]`. Go stub: `id: "go"`, `version: "0.1.0"`, `fileExtensions: [".go"]`, `grammarWasmFile: "tree-sitter-go.wasm"`, `symbolKinds: ["function", "method", "struct", "interface", "enum", "constant", "variable"]`. All method bodies: `throw new Error("not implemented")`.
+  **Acceptance criteria:**
+  - `bunx biome check src/core/wasm-loader.ts src/core/registry.ts src/plugins/typescript/index.ts src/plugins/go/index.ts` passes
+  - A quick smoke test: `bun -e "import { initParser, loadLanguage } from './src/core/wasm-loader.ts'; await initParser(); const lang = await loadLanguage('tree-sitter-typescript.wasm'); console.log('loaded:', !!lang)"` prints `loaded: true`
+  - `bun -e "import { getPluginForFile, getAllPlugins } from './src/core/registry.ts'; console.log(getPluginForFile('foo.ts')?.id, getPluginForFile('bar.go')?.id, getPluginForFile('x.rs'), getAllPlugins().length)"` prints `typescript go null 2`
+  **Constraints:** `wasm-loader.ts` must use static imports (not dynamic) for WASM files — required for `bun build --compile` embedding. Plugin stubs are temporary — later tasks replace method bodies.
+
+- [ ] Implement file locking: `src/core/lock.ts` with tests
+  **Context:** Lock protocol protects `.frame/frame.json` from concurrent writes. Used by `frame.ts` generate/update and `writePurposes`. Lock file is `.frame/frame.lock` containing PID as text.
+  **Dependencies:** Task 2 (`schema.ts` exists).
+  **Scope:** Create these files only:
+  - `src/core/lock.ts`
+  - `tests/core/lock.test.ts`
+  **Details:**
+  - `src/core/lock.ts` — per Implementation Plan → Module Implementation Notes → lock.ts and Shared Contracts → Module Signatures → lock.ts.
+  - Exports: `LockHandle` interface with `release(): Promise<void>`, `acquireLock(dataDir: string, timeoutMs?: number): Promise<LockHandle>`, `forceUnlock(dataDir: string): Promise<void>`.
+  - `acquireLock`: writes current PID to `<dataDir>/frame.lock`. If lock file exists, read PID, check if alive via `process.kill(pid, 0)` (catches error = dead). If stale (dead PID), overwrite. If alive, retry every 100ms until `timeoutMs` (default 10000). On timeout throw: `"frame.json is locked by PID <n>. Run frame update --force-unlock to clear stale lock"`.
+  - `LockHandle.release()`: deletes `<dataDir>/frame.lock`.
+  - `forceUnlock`: deletes `<dataDir>/frame.lock` if exists, no error if missing.
+  - Use `node:fs` (`writeFileSync`, `readFileSync`, `unlinkSync`, `existsSync`) for lock operations — synchronous to avoid race conditions during check-and-write. Use `{ flag: 'wx' }` for exclusive creation where possible.
+  - `tests/core/lock.test.ts` — test:
+    - Acquire and release cycle: lock acquired, file created, release deletes file
+    - Double acquire from same process: second call should detect own PID as alive and wait/timeout
+    - `forceUnlock` clears lock file
+    - `forceUnlock` on non-existent lock doesn't throw
+    - Stale PID detection: write a fake PID (99999999) to lock file, `acquireLock` should detect stale and acquire
+    - Use a temp directory for all tests (cleanup in afterEach)
+  **Acceptance criteria:** `bun test tests/core/lock.test.ts` passes all tests. `bunx biome check src/core/lock.ts` passes.
+  **Constraints:** Lock file path is always `<dataDir>/frame.lock`. Do not use `flock` or other OS-level locking — PID-based per spec.
+
+- [ ] Implement file walker: `src/core/walker.ts` with tests
+  **Context:** Walks project directory, returns relative file paths. Two strategies: git-based (`git ls-files`) when `.git` exists, recursive `readdir` fallback when no git. Filters out `.frame/` and applies extra ignore globs.
+  **Dependencies:** Task 1 (fixture files exist).
+  **Scope:** Create these files only:
+  - `src/core/walker.ts`
+  - `tests/core/walker.test.ts`
+  **Details:**
+  - `src/core/walker.ts` — per Implementation Plan → Module Implementation Notes → walker.ts and Shared Contracts → Module Signatures → walker.ts.
+  - Exports: `WalkOptions` interface (`root: string`, `extraIgnores: string[]`), `walkProject(opts: WalkOptions): Promise<string[]>`.
+  - Git detection: check if `<root>/.git` exists (file or directory — worktrees use a file). Fallback: `git rev-parse --git-dir` in `root`.
+  - Git path: `Bun.spawn(["git", "ls-files", "--cached", "--others", "--exclude-standard"], { cwd: root })` → parse stdout lines.
+  - Non-git path: recursive `readdir` skipping `.git/`, `node_modules/`, `.frame/` directories.
+  - Both paths: filter out `.frame/` prefix, apply extra ignore globs via `new Bun.Glob(pattern).match(relativePath)`, sort result.
+  - Return relative paths (forward-slash separated) from root.
+  - `tests/core/walker.test.ts` — test:
+    - Walking the `tests/fixtures/typescript/` directory returns `.ts` files (use non-git mode since fixtures likely inside git repo — test with a temp dir that has no `.git`)
+    - `.frame/` directories excluded from results
+    - Extra ignore patterns filter correctly (e.g., `extraIgnores: ["*.test.ts"]` removes test files)
+    - Empty directory returns empty array
+    - Results are sorted alphabetically
+    - Create a temp directory structure for tests with known files, verify exact output
+  **Acceptance criteria:** `bun test tests/core/walker.test.ts` passes all tests. `bunx biome check src/core/walker.ts` passes.
+  **Constraints:** Do not import from `registry.ts` — walker has no language knowledge, returns all file paths. Language filtering happens in `frame.ts`.
+
+- [ ] Implement TypeScript plugin: parser, hashing, prompts, and full `index.ts`
+  **Context:** First real language plugin. Parses TypeScript/TSX files via tree-sitter AST, extracts symbols with full `languageFeatures`, classifies imports, provides purpose prompt templates. Replaces the stub `index.ts` from Task 3.
+  **Dependencies:** Task 2 (`schema.ts`, `hash.ts`), Task 3 (`wasm-loader.ts` for loading grammar, stub `index.ts` to replace). Task 1 (fixtures in `tests/fixtures/typescript/`).
+  **Scope:** Create/modify these files only:
+  - `src/plugins/typescript/parser.ts` (create)
+  - `src/plugins/typescript/hashing.ts` (create)
+  - `src/plugins/typescript/prompts.ts` (create)
+  - `src/plugins/typescript/index.ts` (replace stub with full implementation)
+  - `tests/plugins/typescript/parser.test.ts` (create)
+  - `tests/plugins/typescript/hashing.test.ts` (create)
+  **Details:**
+  - `src/plugins/typescript/parser.ts` — traverse tree-sitter AST. Handle node types per Implementation Plan → TypeScript Plugin → parser.ts table. Extract: function declarations, arrow functions in const/let, class declarations (with methods, properties, constructor), interface declarations, type alias declarations, enum declarations, const/let/var declarations. For each symbol: name, kind, exported flag, parameters, returns, genericParams, languageFeatures (per spec's languageFeatures reference → TypeScript section), astText (node text minus comments). Track imports (import statements → paths) and exports. Export detection: `export` keyword or `export default` or `export { ... }`.
+  - `src/plugins/typescript/hashing.ts` — `hashFile(parsed)`: concatenate all symbol astTexts, pass to `hashString()` from `../../core/hash.ts`. `hashSymbol(sym)`: pass `sym.astText` to `hashString()`.
+  - `src/plugins/typescript/prompts.ts` — export `purposePrompt` object with `symbol` and `file` template strings. Symbol template: instruct to describe what symbol does in ≤12 words, caveman style, given name/kind/params/returns/features. File template: instruct to write one-line file summary from its symbol purposes.
+  - `src/plugins/typescript/index.ts` — wire parser, hashing, prompts into `LanguagePlugin` object. `id: "typescript"`, `version: "0.1.0"`, `fileExtensions: [".ts", ".tsx"]`, `grammarWasmFile: "tree-sitter-typescript.wasm"`, `symbolKinds: ["function", "method", "class", "interface", "type", "enum", "constant", "variable"]`. `classifyImport`: bare specifier (no `.`/`/` prefix, not starting with `@/` alias) → `"external"`, relative path → `"internal"`.
+  - `tests/plugins/typescript/parser.test.ts` — use `initParser()` + `loadLanguage("tree-sitter-typescript.wasm")` to get real `Parser.Language`. Test against fixture files:
+    - `simple.ts`: verify symbol count, names, kinds, exported flags, parameter types, return types, import paths, external vs internal import classification
+    - `complex.ts`: verify class with methods/properties/constructor extracted, interface members, type alias definition, enum members, async detection, generic params
+    - `broken.ts`: verify `ParseResult.ok === false` with error string
+  - `tests/plugins/typescript/hashing.test.ts` — test:
+    - Same source → same hash (deterministic)
+    - Adding a comment to source → same hash (AST-based, comments stripped from astText)
+    - Changing function body → different hash
+    - Symbol hash matches expected format (non-empty base62 string)
+  **Acceptance criteria:** `bun test tests/plugins/typescript/` passes all tests. `bunx biome check src/plugins/typescript/` passes.
+  **Edge cases:**
+  - Default exports (`export default function`) → exported=true, name from declaration or `"default"`
+  - Arrow functions assigned to const (`export const foo = () => ...`) → kind `"function"`, name from variable name
+  - Re-exports (`export { foo } from './bar'`) → tracked in exports list but not as symbols
+  - Files with only imports and no declarations → empty symbols array, imports populated
+  **Constraints:** Parser receives `Parser.Language` from core — never calls `loadLanguage` itself. All tree-sitter node type names must match the actual TSX grammar (verify against tree-sitter-typescript docs/playground). `astText` for hashing must exclude comments but include structure — use node text then strip comment substrings, or collect non-comment child text.
+
+- [ ] Implement Go plugin: parser, hashing, prompts, and full `index.ts`
+  **Context:** Second language plugin. Parses Go files via tree-sitter AST, extracts symbols with Go-specific `languageFeatures`, classifies imports against `go.mod` module path. Replaces the stub `index.ts` from Task 3.
+  **Dependencies:** Task 2 (`schema.ts`, `hash.ts`), Task 3 (`wasm-loader.ts`, stub `index.ts` to replace). Task 1 (fixtures in `tests/fixtures/go/`).
+  **Scope:** Create/modify these files only:
+  - `src/plugins/go/parser.ts` (create)
+  - `src/plugins/go/hashing.ts` (create)
+  - `src/plugins/go/prompts.ts` (create)
+  - `src/plugins/go/index.ts` (replace stub with full implementation)
+  - `tests/plugins/go/parser.test.ts` (create)
+  - `tests/plugins/go/hashing.test.ts` (create)
+  - `tests/fixtures/go/go.mod` (create — needed for import classification tests)
+  **Details:**
+  - `src/plugins/go/parser.ts` — traverse tree-sitter AST. Handle node types per Implementation Plan → Go Plugin → parser.ts table. Extract: function declarations, method declarations (with receiver), struct type declarations (with fields + tags), interface type declarations (with members), const declarations (detect iota blocks → group as enum), var declarations. Export detection: first character uppercase → `exported: true`. Track imports from import declarations. `classifyImport(importPath, projectRoot)`: read `go.mod` from `projectRoot` to get module path, cache it. If import starts with module path → `"internal"`, else → `"external"`.
+  - `src/plugins/go/hashing.ts` — same pattern as TypeScript: `hashFile` concatenates symbol astTexts, `hashSymbol` hashes `sym.astText`. Both use `hashString()` from `../../core/hash.ts`.
+  - `src/plugins/go/prompts.ts` — export `purposePrompt` with `symbol` and `file` templates. Same caveman style instructions as TS but adapted for Go idioms (receivers, error returns, etc).
+  - `src/plugins/go/index.ts` — wire into `LanguagePlugin`. `id: "go"`, `version: "0.1.0"`, `fileExtensions: [".go"]`, `grammarWasmFile: "tree-sitter-go.wasm"`, `symbolKinds: ["function", "method", "struct", "interface", "enum", "constant", "variable"]`.
+  - Go-specific `languageFeatures` per spec:
+    - function: `errorReturn` (last return is `error`), `goroutineHint` (body contains `go` keyword call), `initFunc` (name is `init`)
+    - method: `receiver` object with `type` and `pointer` boolean
+    - struct: `fields` array with `name`, `type`, `exported`, `tags` object
+    - interface: `members` array, `structural: true`
+    - constant: `value`, `iotaBlock` (enclosing const block name if iota present)
+    - enum (iota block): `kind: "iota"`, `iotaBlock` name, `members` array
+    - variable: `declarationKind: "var"`
+  - `tests/plugins/go/parser.test.ts` — use `initParser()` + `loadLanguage("tree-sitter-go.wasm")`. Test:
+    - `simple.go`: function count, exported vs unexported, error return detection, import paths
+    - `complex.go`: struct fields + tags, method receiver type + pointer flag, interface members, iota const block → enum extraction
+    - `broken.go`: `ParseResult.ok === false`
+    - Import classification: module-prefixed path → internal, everything else → external
+  - `tests/plugins/go/hashing.test.ts` — deterministic hash, comment change → same hash, code change → different hash
+  - `tests/fixtures/go/go.mod`: `module example.com/testproject\n\ngo 1.21\n`
+  **Acceptance criteria:** `bun test tests/plugins/go/` passes all tests. `bunx biome check src/plugins/go/` passes.
+  **Edge cases:**
+  - Unexported functions (lowercase) → `exported: false`
+  - Method with value receiver vs pointer receiver → `pointer: true/false` in `languageFeatures.receiver`
+  - Iota const block with no explicit name → use first constant's name as `iotaBlock` group name, or the `type` name if a type declaration precedes the const block
+  - Struct with embedded fields (no field name, just type) → use type name as field name
+  - `init()` function → `initFunc: true`, `exported: false`
+  - Missing `go.mod` → treat all imports as external
+  **Constraints:** Parser receives `Parser.Language` from core. Tree-sitter node type names must match tree-sitter-go grammar. `go.mod` read should be cached per project root (read once, reuse).
+
+- [ ] Implement worker pool: `src/core/workers.ts` and `src/core/worker-entry.ts`
+  **Context:** Bun worker threads for parallel file parsing. Pool dispatches `WorkerRequest` messages, collects `WorkerResponse` results. Worker entry is standalone — loads WASM, gets plugin, runs parse pipeline per file.
+  **Dependencies:** Task 2 (`schema.ts` types), Task 3 (`wasm-loader.ts`, `registry.ts`), Task 6 (TypeScript plugin — for integration testing), Task 7 (Go plugin).
+  **Scope:** Create these files only:
+  - `src/core/workers.ts`
+  - `src/core/worker-entry.ts`
+  **Details:**
+  - `src/core/worker-entry.ts` — per Implementation Plan → Module Implementation Notes → worker-entry.ts. Runs in Bun worker thread. `self.onmessage` handler: receives `WorkerRequest`, looks up plugin via `getPluginById`, calls `initParser()`, `loadLanguage()`, plugin `parse()`. On success: computes hashes, classifies imports, builds `WorkerResponse` with `result` field. On failure: returns `WorkerResponse` with `parseError` field. Must import from relative paths (`./wasm-loader.ts`, `./registry.ts`, `./schema.ts`).
+  - `src/core/workers.ts` — per Implementation Plan → Module Implementation Notes → workers.ts and Shared Contracts → Module Signatures → workers.ts. Exports `PoolOptions` interface and `processFiles()` function. Creates `Math.min(concurrency, files.length)` workers (minimum 1 if files.length > 0). Queue-based dispatch: each worker processes one file at a time, sends result back via `postMessage`, gets next file from queue. Collects all `WorkerResponse[]`. Calls `opts.onProgress(current, total, filePath)` after each file completes. Calls `opts.onError(filePath, error)` on parse errors. Terminates all workers before returning. Handle edge case: empty files array → return `[]` immediately.
+  - Worker URL: `new Worker(new URL("./worker-entry.ts", import.meta.url).href)`.
+  **Acceptance criteria:**
+  - `bunx biome check src/core/workers.ts src/core/worker-entry.ts` passes
+  - Manual smoke test: `bun -e "import { processFiles } from './src/core/workers.ts'; const r = await processFiles([{path:'tests/fixtures/typescript/simple.ts', source: await Bun.file('tests/fixtures/typescript/simple.ts').text(), pluginId:'typescript'}], {concurrency:1, projectRoot:'.', onProgress:(c,t,p)=>console.log(c,t,p), onError:(p,e)=>console.error(p,e)}); console.log(JSON.stringify(r[0]?.result?.exports))"` prints the exported symbol names from simple.ts
+  **Constraints:** Workers must be terminated after processing completes — no leaked threads. Each worker loads its own WASM instance (no shared state). `worker-entry.ts` must not import from plugins directly — uses `getPluginById` from registry.
+
+- [ ] Implement frame orchestration: `src/core/frame.ts` with tests
+  **Context:** Central module. `generate()` builds frame from scratch, `update()` syncs to current code preserving unchanged purposes, `loadFrame()` reads frame.json, `writePurposes()` patches purposes via locking, `computeStats()` recalculates root-level stats. Orchestrates walker, workers, lock, and registry.
+  **Dependencies:** Task 2 (`schema.ts`, `hash.ts`), Task 3 (`registry.ts`), Task 4 (`lock.ts`), Task 5 (`walker.ts`), Task 8 (`workers.ts`). All must be complete.
+  **Scope:** Create these files only:
+  - `src/core/frame.ts`
+  - `tests/core/frame.test.ts`
+  **Details:**
+  - `src/core/frame.ts` — per Implementation Plan → Module Implementation Notes → frame.ts and Shared Contracts → Module Signatures → frame.ts.
+  - Exports: `FrameOptions` interface, `generate()`, `update()`, `loadFrame()`, `writePurposes()`, `computeStats()`.
+  - `generate(opts)`:
+    1. Walk project via `walkProject({ root: opts.root, extraIgnores: opts.extraIgnores })`
+    2. Filter to files with registered plugins via `getPluginForFile(path)`
+    3. Read file sources via `Bun.file(path).text()`
+    4. Process via `processFiles()` worker pool
+    5. Build `FileEntry[]` from `WorkerResponse[]` — set all `purpose: null`
+    6. Build `FrameRoot` with `computeStats()`, `version: FRAME_VERSION`, timestamps, projectRoot
+    7. Ensure `.frame/` directory exists, create `.frame/.gitignore` containing `*` if missing
+    8. Write atomically: write to `.frame/frame.json.tmp`, rename to `.frame/frame.json`
+    9. Return `FrameRoot`
+  - `update(opts)`:
+    1. Load existing frame via `loadFrame()`
+    2. Walk project, filter to plugin-supported files
+    3. Detect: new files (in walk, not in frame), deleted files (in frame, not in walk), existing files
+    4. Process all files (new + existing) via worker pool
+    5. For existing files: compare new file hash to old. Same hash → preserve existing purposes. Different hash → clear purposes. Plugin version mismatch → clear purposes.
+    6. Build updated `FileEntry[]`, recompute stats
+    7. Atomic write (same as generate)
+    8. Return `FrameRoot`
+  - `loadFrame(dataPath)`: read file, parse JSON, return `FrameRoot`. If file doesn't exist, throw `FrameNotFoundError`.
+  - `writePurposes(dataDir, patches)`: acquire lock → read frame from disk → for each patch, find file by `path`, if `symbolName` set find symbol by name, set `purpose` → recompute `needsGeneration` → atomic write → release lock.
+  - `computeStats(files)`: single pass. `totalFiles` = files.length. `totalSymbols` = sum of all symbols.length. `needsGeneration` = count of `purpose === null` entries (files + symbols) where `parseError === null`. `parseErrors` = count of files with `parseError !== null`. `languageComposition` = count files per language.
+  - `tests/core/frame.test.ts` — test:
+    - `computeStats`: known `FileEntry[]` → verify all counts
+    - `computeStats`: file with parseError → excluded from needsGeneration, counted in parseErrors
+    - `computeStats`: file with null purpose + 2 symbols with null purpose → contributes 3 to needsGeneration
+    - `generate` against `tests/fixtures/typescript/` directory: creates `.frame/frame.json`, parseable, correct file count, all purposes null
+    - `loadFrame` on non-existent path → throws `FrameNotFoundError`
+    - `writePurposes`: create frame, patch a file purpose, re-read → purpose updated
+    - `writePurposes`: patch a symbol purpose by name → symbol purpose updated
+    - `.frame/.gitignore` created with content `*`
+    - Use temp directories to isolate tests, clean up in afterEach
+  **Acceptance criteria:** `bun test tests/core/frame.test.ts` passes all tests. `bunx biome check src/core/frame.ts` passes.
+  **Edge cases:**
+  - `update` when no files changed → all purposes preserved, stats unchanged
+  - `update` when file deleted → removed from frame
+  - `update` when new file added → added with `purpose: null`
+  - `writePurposes` with patch for non-existent file → skip silently (don't crash)
+  - `writePurposes` with patch for non-existent symbol → skip silently
+  **Constraints:** All frame writes use atomic rename pattern (write `.tmp`, rename). `generate` always creates fresh — discards existing frame. `update` preserves purposes for unchanged entries. Do not import plugin modules directly — use registry.
+
+- [ ] Implement search scoring: `src/core/search.ts` with tests
+  **Context:** Search algorithm scores files and symbols against query terms. Exact weights and multiplier defined in spec. Used by `frame search` CLI command.
+  **Dependencies:** Task 2 (`schema.ts` types — `FrameRoot`, `SearchResult`, `SearchOptions`).
+  **Scope:** Create these files only:
+  - `src/core/search.ts`
+  - `tests/core/search.test.ts`
+  **Details:**
+  - `src/core/search.ts` — per Implementation Plan → Module Implementation Notes → search.ts. Copy the exact algorithm. Exports: `search(frame: FrameRoot, query: string, opts: SearchOptions): SearchResult[]`.
+  - Scoring weights:
+    - Exact symbol name match (case-insensitive): **10** per term
+    - Substring match on file path (case-insensitive): **5** per term
+    - All query terms found in purpose: **3** bonus (only if purpose non-null and all terms present)
+    - Partial term match in purpose: **1** per matched term
+    - Exported symbol multiplier: **1.5x** on final score
+  - Tokenize query: `query.toLowerCase().split(/\s+/).filter(Boolean)`
+  - Sort results by score descending, cap at `opts.limit`
+  - Filter by `opts.threshold` (minimum score to include)
+  - `opts.filesOnly` → skip symbol-level scoring
+  - `opts.symbolsOnly` → skip file-level scoring
+  - Null purposes: scored by name/path only (purpose scoring skipped)
+  - `tests/core/search.test.ts` — build a test `FrameRoot` with known files/symbols, then test:
+    - Exact symbol name match → score includes 10 points
+    - Path substring match → score includes 5 points
+    - All terms in purpose → score includes 3 bonus
+    - Partial purpose match → 1 per matched term
+    - Exported symbol → 1.5x multiplier applied
+    - `filesOnly: true` → no symbol results
+    - `symbolsOnly: true` → no file results
+    - `limit: 5` → max 5 results
+    - `threshold: 10` → low-scoring entries excluded
+    - Null purpose → still searchable by name/path, marked appropriately
+    - Empty query → no results (all terms empty after split)
+    - Results sorted by score descending
+  **Acceptance criteria:** `bun test tests/core/search.test.ts` passes all tests. `bunx biome check src/core/search.ts` passes.
+  **Constraints:** Scoring must match spec weights exactly. Do not add additional scoring heuristics beyond what's specified.
+
+- [ ] Implement output formatter: `src/core/formatter.ts` with tests
+  **Context:** All read commands produce plain text output (no ANSI). Each formatter takes typed data, returns string. `--json` mode handled in CLI (just `JSON.stringify`) — formatter only does text.
+  **Dependencies:** Task 2 (`schema.ts` types).
+  **Scope:** Create these files only:
+  - `src/core/formatter.ts`
+  - `tests/core/formatter.test.ts`
+  **Details:**
+  - `src/core/formatter.ts` — per Implementation Plan → Module Implementation Notes → formatter.ts and Shared Contracts → Module Signatures → formatter.ts.
+  - Exports: `formatSkeleton`, `formatFileDetail`, `formatSearchResults`, `formatApiSurface`, `formatDeps`, `formatHelp`.
+  - `formatSkeleton(frame: FrameRoot): string` — one block per file:
+    ```
+    src/auth/handler.ts [typescript]
+      handles HTTP auth routes
+      exports: AuthHandler, validateToken
+      imports: src/db/user.ts, src/lib/jwt.ts
+    ```
+    Parse-errored files show `[parse error]` tag after language. Null purpose shows `[purpose pending]`. No `externalImports` in skeleton.
+  - `formatFileDetail(file: FileEntry): string` — file header with hash, then each symbol as indented block. Symbol shows: kind, name, (exported), hash, purpose, params, returns, then languageFeatures as key:value pairs. Parse-errored files show error message instead of symbols.
+  - `formatSearchResults(results: SearchResult[], query: string): string` — header with query and count, then each result: score, path, purpose. Symbol matches add name/kind/exported.
+  - `formatApiSurface(frame: FrameRoot): string` — group by file. One line per exported symbol: `kind name(params) → returns`. Skip files with no exports.
+  - `formatDeps(file: FileEntry, reverseDeps: string[], includeExternal: boolean): string` — sections: "Imports:" (internal), "External imports:" (if includeExternal), "Imported by:" (reverse deps). Empty sections omitted.
+  - `formatHelp(command?: string, agent?: boolean): string` — per spec's CLI help system section. No args → top-level help. `command` string → per-command help with AGENT HINT. `agent: true` → machine-optimized dense text.
+  - `tests/core/formatter.test.ts` — test each function with known inputs:
+    - `formatSkeleton`: verify file path + language in output, purpose text, exports list, imports list, `[parse error]` marker, `[purpose pending]` marker
+    - `formatFileDetail`: verify symbol blocks, languageFeatures rendered, parse error message shown
+    - `formatSearchResults`: verify score, path, symbol details in output
+    - `formatApiSurface`: verify only exported symbols appear, grouped by file
+    - `formatDeps`: verify imports/reverse deps sections, external only when flag set
+    - `formatHelp()`: contains "COMMANDS" and all command names
+    - `formatHelp("search")`: contains "ARGUMENTS", "FLAGS", "AGENT HINT"
+    - `formatHelp(undefined, true)`: contains "TOOL: frame" and "READ WORKFLOW"
+    - No ANSI escape codes in any output (regex check: no `\x1b[`)
+  **Acceptance criteria:** `bun test tests/core/formatter.test.ts` passes all tests. `bunx biome check src/core/formatter.ts` passes.
+  **Constraints:** Output must be plain text, no ANSI codes. Help text must match spec's CLI help system section exactly (command names, flag names, descriptions). Do not import ANSI color libraries.
+
+- [ ] Implement CLI entry point: `src/cli.ts` with integration tests
+  **Context:** Commander-based CLI wiring all commands together. Entry point for `bun build --compile`. Handles global options (`--root`, `--data`, `--json`, `--concurrency`, `--ignore`), subcommands for generate/update/read/read-file/search/api-surface/deps/write-purposes/help. Error handling per spec (exit codes, messages).
+  **Dependencies:** All prior tasks (2-11) complete. All core modules and plugins functional.
+  **Scope:** Create/modify these files only:
+  - `src/cli.ts` (create)
+  - `tests/integration/cli.test.ts` (create)
+  - Create additional fixture project for integration tests:
+    - `tests/fixtures/sample-project/` — small TypeScript project (3-4 .ts files with imports between them, 1 external import, 1 broken file)
+    - `tests/fixtures/sample-project/.gitignore` — ignores `node_modules/`, `dist/`
+  **Details:**
+  - `src/cli.ts` — per Implementation Plan → Module Implementation Notes → cli.ts.
+  - Use `@commander-js/extra-typings` `Command` class.
+  - Global options on program: `--root <path>` (default `process.cwd()`), `--data <path>` (default `path.join(root, ".frame", "frame.json")`), `--json` (boolean), `--concurrency <n>` (default `navigator.hardwareConcurrency`), `--ignore <glob...>` (repeatable, default `[]`).
+  - Commands:
+    - `generate` — call `generate(frameOpts)`, report stats to stderr. `--force-unlock` flag.
+    - `update` — call `update(frameOpts)`, report stats to stderr. `--force-unlock` flag.
+    - `read` — `loadFrame()` → `--json` ? `JSON.stringify(skeleton)` : `formatSkeleton()`. Skeleton = frame with symbols stripped from each file for JSON mode.
+    - `read-file <path>` — `loadFrame()` → find file → `--json` ? `JSON.stringify(file)` : `formatFileDetail()`. File not found → `FileNotInFrameError`.
+    - `search <query...>` — `loadFrame()` → `search()` → format/JSON. Query parts joined with space. Flags: `--limit`, `--files-only`, `--symbols-only`, `--threshold`.
+    - `api-surface` — `loadFrame()` → `--json` ? JSON of exported symbols : `formatApiSurface()`.
+    - `deps <path>` — `loadFrame()` → find file → compute reverse deps (scan all files' imports for this path) → format. `--external` flag.
+    - `write-purposes` — read `PurposePatch[]` JSON from stdin → `writePurposes()`. Used by frame-populate skill.
+    - `help [command]` — `--agent` flag → `formatHelp(cmd, true)`, else `formatHelp(cmd)`.
+  - Error handling: catch `FrameNotFoundError` → stderr message, exit 1. Catch `FileNotInFrameError` → stderr message, exit 1. Pattern per Implementation Plan → cli.ts error handling section.
+  - Progress reporting for generate/update: write `[n/total] path` to stderr via `onProgress` callback.
+  - `tests/integration/cli.test.ts` — end-to-end tests running actual CLI via `Bun.spawn` or bun shell `$`:
+    - `frame generate --root tests/fixtures/sample-project` → creates `.frame/frame.json`, valid JSON, correct file count
+    - `frame read --root tests/fixtures/sample-project` → outputs skeleton text with file paths
+    - `frame read --root tests/fixtures/sample-project --json` → valid JSON output
+    - `frame read-file src/index.ts --root tests/fixtures/sample-project` → shows symbols
+    - `frame read-file nonexistent.ts --root tests/fixtures/sample-project` → exit code 1, error message
+    - `frame search "function" --root tests/fixtures/sample-project` → returns results
+    - `frame api-surface --root tests/fixtures/sample-project` → lists exported symbols
+    - `frame deps <some-file> --root tests/fixtures/sample-project` → shows imports + reverse deps
+    - `frame read --root /tmp/empty-dir` → exit code 1, "No frame found" message (use temp dir)
+    - `frame help` → contains "COMMANDS"
+    - `frame help --agent` → contains "TOOL: frame"
+    - `frame help search` → contains "AGENT HINT"
+    - `frame update --root tests/fixtures/sample-project` → preserves structure, updates timestamps
+    - `echo '[{"path":"...","purpose":"test"}]' | frame write-purposes --root tests/fixtures/sample-project` → patches purpose
+    - `frame --json read --root tests/fixtures/sample-project` → verify `--json` as global option works
+    - Clean up `.frame/` dirs in `afterAll`
+  **Acceptance criteria:** `bun test tests/integration/cli.test.ts` passes all tests. `bunx biome check src/cli.ts` passes. `bun run build` compiles successfully to `./frame` binary.
+  **Edge cases:**
+  - `--data` override changes frame file location
+  - `--concurrency 1` forces single worker
+  - `--ignore "*.test.ts"` excludes test files from frame
+  - `write-purposes` with empty stdin → no-op
+  - `search` with no results → empty output, exit code 0
+  **Constraints:** CLI must work both via `bun run src/cli.ts` and compiled binary. All user-facing output goes to stdout. Progress/errors go to stderr. `--json` returns raw JSON (not formatted text) for all read commands.
+
+- [ ] Create `frame-populate` skill file
+  **Context:** Claude Code skill file that instructs Claude to fill missing `purpose` fields in frame.json. Not executable code — markdown instructions for an LLM agent.
+  **Dependencies:** Task 12 (CLI complete — skill references CLI commands).
+  **Scope:** Create this file only:
+  - `.claude/skills/frame-populate.md`
+  **Details:**
+  - Content per Implementation Plan → frame-populate Skill section. Exact markdown content specified there.
+  - Frontmatter: `name: frame-populate`, `description: Fill missing purpose fields in .frame/frame.json — symbols first, then file rollups`
+  - Sections: Rules (caveman style, bottom-up, batch ≤10, skip parseError), Workflow (6 steps with exact CLI commands)
+  - Workflow references these CLI commands: `frame read --json`, `frame read-file <path> --json`, `echo '[...]' | frame write-purposes`
+  - Create `.claude/skills/` directory if it doesn't exist
+  **Acceptance criteria:**
+  - File exists at `.claude/skills/frame-populate.md`
+  - Contains valid YAML frontmatter with `name: frame-populate`
+  - Contains all 6 workflow steps with correct CLI commands
+  - References `frame read --json`, `frame read-file`, `frame write-purposes`
+  - Mentions caveman writing style, batch size ≤10, skip parseError files
+  **Constraints:** This is a markdown file, not executable code. Copy content from spec — do not add extra instructions or steps beyond what's specified.
+
+- [ ] Run full test suite, fix lint issues, verify build compiles
+  **Context:** Final validation pass. All code written in tasks 1-13. Run full test suite, fix any lint/format issues, verify `bun run build` produces a binary.
+  **Dependencies:** All prior tasks (1-13) complete.
+  **Scope:** May modify any `src/**/*.ts` or `tests/**/*.ts` file to fix issues. Do not change behavior — only fix lint errors, type errors, import paths, or test assertions that fail due to integration issues between tasks.
+  **Details:**
+  - Run `bun test` — all tests must pass. If tests fail due to cross-task integration issues (e.g., a function signature changed), fix the caller to match the actual implementation.
+  - Run `bun run lint` — fix any Biome errors via `bun run lint:fix`. If auto-fix doesn't resolve, manually fix.
+  - Run `bun run build` — must produce `./frame` binary. If compilation fails, fix the issue (likely import path or WASM embedding problem).
+  - Verify binary works: `./frame help` should print help text. `./frame generate --root tests/fixtures/sample-project` should produce frame.json.
+  - If any test needs adjustment due to actual behavior differing from plan (but matching spec), update the test — not the implementation.
+  **Acceptance criteria:**
+  - `bun test` exits with code 0, all tests pass
+  - `bun run lint` exits with code 0, no errors
+  - `bun run build` produces `./frame` binary
+  - `./frame help` prints help text to stdout
+  - `./frame generate --root tests/fixtures/sample-project` creates valid `.frame/frame.json`
+  **Constraints:** Do not add new features. Do not refactor working code. Only fix issues that prevent tests, lint, or build from passing. If a test is wrong (doesn't match spec), fix the test. If implementation is wrong (doesn't match spec), fix implementation.
+
 # Summary
+
+# Retro
 
 # Retro
 
