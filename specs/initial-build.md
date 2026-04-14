@@ -1940,7 +1940,7 @@ Create a small sample project under `tests/fixtures/` with:
   **Acceptance criteria:** `bun test tests/core/hash.test.ts` passes all tests. `bunx biome check src/core/schema.ts src/core/hash.ts` passes.
   **Constraints:** `schema.ts` must have no imports except `type Parser from "web-tree-sitter"` (type-only). `hash.ts` must have no imports (uses global `Bun.hash`).
 
-- [ ] Implement WASM loader and plugin registry: `src/core/wasm-loader.ts` and `src/core/registry.ts`
+- [x] Implement WASM loader and plugin registry: `src/core/wasm-loader.ts` and `src/core/registry.ts`
   **Context:** `wasm-loader.ts` initializes web-tree-sitter runtime and loads grammar WASM files. `registry.ts` maps file extensions to language plugins. Both are imported by worker-entry and frame orchestration. These need stub plugins to exist — create minimal stubs.
   **Dependencies:** Task 1 (grammars exist in `grammars/`), Task 2 (`schema.ts` types exist).
   **Scope:** Create these files only:
@@ -2323,3 +2323,8 @@ Create a small sample project under `tests/fixtures/` with:
 - `schema.ts` has zero runtime logic except two error classes and one constant, as specified.
 - `hash.ts` has zero imports, uses global `Bun.hash` as specified.
 - All 6 hash tests pass.
+
+## Task 3 — WASM loader and plugin registry
+- `Parser.Language.load()` in web-tree-sitter v0.24 expects file path string, not ArrayBuffer. Spec example showed reading into buffer then passing to `load()` — that causes `ENAMETOOLONG`. Fixed by passing embedded path directly. Same behavior after `bun build --compile` since `import with {type:"file"}` gives embedded path either way.
+- Biome import sorting requires alphabetical order — grammar imports reordered (go, ts, core) instead of spec's logical order (core, ts, go). No functional impact.
+- Plugin stubs use `_param` prefix convention for unused params to satisfy linting.
