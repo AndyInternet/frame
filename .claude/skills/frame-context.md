@@ -1,6 +1,6 @@
 ---
 name: frame-context
-description: Auto-load project context from .frame — orient first, then explore with the frame CLI. Use whenever a `.frame/` directory is present in the project, or when the user asks to load context, frame, or project understanding.
+description: Auto-load project context from .frame — orient first, then explore with the frame CLI. Use whenever a `.frame/` directory is present in the project, or when the user asks to load project context or understand the project structure.
 ---
 
 # frame-context
@@ -30,7 +30,7 @@ From the output, note:
 - **Shape:** `totalFiles`, `totalSymbols`, `languageComposition` — size and stack
 - **Coverage:** `needsGeneration` — count of unpopulated purposes. If `> 0`, tell the user purposes are partially populated and suggest `frame-populate` to fill gaps. Proceed regardless.
 - **Parse health:** `parseErrors` — if `> 0`, identify which files (look for `parseError !== null` in the `files[]` array) and remember to fall back to raw `Read` for those
-- **The skeleton:** the `files[]` array — paths, languages, purposes, exports, imports. This is your working map.
+- **The skeleton:** the `files[]` array — paths, languages, purposes, exports, imports, `externalImports`. This is your working map. Note: symbols are stripped from `frame read` output — use `frame read-file <path> --json` to get symbol-level detail. The `imports` field lists internal (project-relative) paths only; reach for `frame deps` when you need the reverse graph (`importedBy`) or want internal + external deps surfaced together.
 
 Do NOT drill into every file at this stage. The skeleton is the orientation; deeper reads happen on demand.
 
