@@ -12,6 +12,7 @@ import {
 } from "./core/formatter.ts";
 import { generate, loadFrame, update, writePurposes } from "./core/frame.ts";
 import { forceUnlock } from "./core/lock.ts";
+import { findProjectRoot } from "./core/root.ts";
 import {
   FileNotInFrameError,
   FrameNotFoundError,
@@ -37,7 +38,10 @@ interface GlobalOpts {
  */
 function addSharedOpts(cmd: Command): Command {
   return cmd
-    .option("--root <path>", "project root", process.cwd())
+    .option(
+      "--root <path>",
+      "project root (default: nearest ancestor with .git or .frame, else cwd)",
+    )
     .option("--data <path>", "frame file location")
     .option("--json", "return raw JSON output", false)
     .option("--concurrency <n>", "worker count")
@@ -51,7 +55,7 @@ function addSharedOpts(cmd: Command): Command {
 
 function resolveGlobal(cmd: Command): GlobalOpts {
   const opts = cmd.optsWithGlobals();
-  const root = resolve(opts.root ?? process.cwd());
+  const root = opts.root ? resolve(opts.root) : findProjectRoot(process.cwd());
   const dataPath = opts.data ?? join(root, ".frame", "frame.json");
   const json = opts.json ?? false;
   const concurrency = opts.concurrency

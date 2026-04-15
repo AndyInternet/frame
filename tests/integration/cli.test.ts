@@ -245,6 +245,16 @@ describe("CLI integration", () => {
     expect(exitCode).toBe(0);
   });
 
+  // --- auto-detect root from subdirectory ---
+  it("auto-detects project root when run from a subdirectory of a fixture with .frame", async () => {
+    // Pre-condition: the previous "frame generate" test created FRAME_DIR.
+    // From a nested cwd with no --root, frame should walk up and find FIXTURE.
+    const subdir = join(FIXTURE, "src");
+    const { stdout, exitCode } = await run(["read"], { cwd: subdir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("src/index.ts");
+  });
+
   // --- --json as global option before subcommand ---
   it("frame --json read works with global option before subcommand", async () => {
     const { stdout, exitCode } = await run([
