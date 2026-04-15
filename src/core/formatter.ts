@@ -189,7 +189,7 @@ const COMMANDS: Record<
   init: {
     usage: "frame init",
     output:
-      "creates .frame/.gitignore (ignores all .frame contents)\n    and installs frame-context and frame-populate skills into .claude/skills/.\n    idempotent — already-present files are skipped.",
+      "creates .frame/.gitignore, .frame/config.json with default ignore patterns,\n    and installs frame-context and frame-populate skills into .claude/skills/.\n    idempotent — already-present files are skipped.",
     hint: "run once per project to bootstrap. then run `frame generate`.",
   },
   generate: {

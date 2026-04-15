@@ -42,8 +42,16 @@ export async function loadConfig(root: string): Promise<FrameConfig> {
     throw new Error(`Invalid JSON in .frame/config.json: ${msg}`);
   }
 
-  if (typeof parsed !== "object" || parsed === null) {
-    return { ignore: [] };
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    const actualType =
+      parsed === null
+        ? "null"
+        : Array.isArray(parsed)
+          ? "array"
+          : typeof parsed;
+    throw new Error(
+      `Invalid .frame/config.json: expected a JSON object, got ${actualType}`,
+    );
   }
   const obj = parsed as Record<string, unknown>;
 

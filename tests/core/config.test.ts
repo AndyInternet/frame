@@ -90,4 +90,14 @@ describe("loadConfig error cases", () => {
     await writeConfigFile('{"ignore": ["valid/**", 42]}');
     await expect(loadConfig(tempDir)).rejects.toThrow(/ignore.*string/);
   });
+
+  test("top-level scalar or array JSON throws", async () => {
+    await writeConfigFile('"just a string"');
+    await expect(loadConfig(tempDir)).rejects.toThrow(/expected a JSON object/);
+  });
+
+  test("top-level array JSON throws", async () => {
+    await writeConfigFile('["foo/**"]');
+    await expect(loadConfig(tempDir)).rejects.toThrow(/expected a JSON object/);
+  });
 });
