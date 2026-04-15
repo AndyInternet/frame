@@ -61,7 +61,7 @@ Five operations, each idempotent (exists check then skip):
 4. Write `<root>/.claude/skills/frame-context.md` (from embedded source)
 5. Write `<root>/.claude/skills/frame-populate.md` (from embedded source)
 
-Directory creates use `recursive: true` and don't appear in the report; only the four written files do.
+Directory creates use `recursive: true` and don't appear in the report; only the three written files do.
 
 ### API
 
@@ -75,7 +75,7 @@ interface InitOutcome {
 
 interface InitResult {
   root: string;              // absolute project root path
-  outcomes: InitOutcome[];   // exactly 4 entries, in stable order
+  outcomes: InitOutcome[];   // exactly 3 entries, in stable order
 }
 
 export async function init(root: string): Promise<InitResult>;
@@ -152,9 +152,9 @@ Mixed case shows a per-line mix of `created` / `skipped`. The trailing "Next" li
 ### `tests/core/init.test.ts`
 
 `init`:
-- Clean run on empty directory creates all 4 files; `outcomes` shows 4 `created`.
-- Re-run on already-initialized directory creates nothing; `outcomes` shows 4 `skipped`.
-- Partial state (only `.frame/.gitignore` exists) creates the 3 missing files; `outcomes` shows 1 `skipped` + 3 `created`.
+- Clean run on empty directory creates all 3 files; `outcomes` shows 3 `created`.
+- Re-run on already-initialized directory creates nothing; `outcomes` shows 3 `skipped`.
+- Partial state (only `.frame/.gitignore` exists) creates the 2 missing skill files; `outcomes` shows 1 `skipped` + 2 `created`.
 - `.frame/.gitignore` content is exactly `*\n`.
 - Embedded skill content matches the source files in this repo's `.claude/skills/`.
 
