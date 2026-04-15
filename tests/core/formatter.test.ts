@@ -409,8 +409,8 @@ describe("formatInitResult", () => {
       root: "/Users/me/myproject",
       outcomes: [
         { path: ".frame/.gitignore", status: "created" },
-        { path: ".claude/skills/frame-context.md", status: "created" },
-        { path: ".claude/skills/frame-populate.md", status: "created" },
+        { path: ".claude/skills/frame-context/SKILL.md", status: "created" },
+        { path: ".claude/skills/frame-populate/SKILL.md", status: "created" },
       ],
     });
 
@@ -418,8 +418,8 @@ describe("formatInitResult", () => {
       [
         "Initialized frame at /Users/me/myproject",
         "  created  .frame/.gitignore",
-        "  created  .claude/skills/frame-context.md",
-        "  created  .claude/skills/frame-populate.md",
+        "  created  .claude/skills/frame-context/SKILL.md",
+        "  created  .claude/skills/frame-populate/SKILL.md",
         "",
         "Next: run `frame generate`",
       ].join("\n"),
@@ -431,8 +431,8 @@ describe("formatInitResult", () => {
       root: "/tmp/p",
       outcomes: [
         { path: ".frame/.gitignore", status: "skipped" },
-        { path: ".claude/skills/frame-context.md", status: "skipped" },
-        { path: ".claude/skills/frame-populate.md", status: "skipped" },
+        { path: ".claude/skills/frame-context/SKILL.md", status: "skipped" },
+        { path: ".claude/skills/frame-populate/SKILL.md", status: "skipped" },
       ],
     });
 
@@ -440,8 +440,8 @@ describe("formatInitResult", () => {
       [
         "Initialized frame at /tmp/p",
         "  skipped  .frame/.gitignore (exists)",
-        "  skipped  .claude/skills/frame-context.md (exists)",
-        "  skipped  .claude/skills/frame-populate.md (exists)",
+        "  skipped  .claude/skills/frame-context/SKILL.md (exists)",
+        "  skipped  .claude/skills/frame-populate/SKILL.md (exists)",
         "",
         "Next: run `frame generate`",
       ].join("\n"),
@@ -453,8 +453,8 @@ describe("formatInitResult", () => {
       root: "/x",
       outcomes: [
         { path: ".frame/.gitignore", status: "skipped" },
-        { path: ".claude/skills/frame-context.md", status: "created" },
-        { path: ".claude/skills/frame-populate.md", status: "created" },
+        { path: ".claude/skills/frame-context/SKILL.md", status: "created" },
+        { path: ".claude/skills/frame-populate/SKILL.md", status: "created" },
       ],
     });
 
@@ -462,8 +462,8 @@ describe("formatInitResult", () => {
       [
         "Initialized frame at /x",
         "  skipped  .frame/.gitignore (exists)",
-        "  created  .claude/skills/frame-context.md",
-        "  created  .claude/skills/frame-populate.md",
+        "  created  .claude/skills/frame-context/SKILL.md",
+        "  created  .claude/skills/frame-populate/SKILL.md",
         "",
         "Next: run `frame generate`",
       ].join("\n"),

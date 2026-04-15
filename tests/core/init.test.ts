@@ -9,11 +9,11 @@ import { init } from "../../src/core/init.ts";
 const REPO_ROOT = resolve(import.meta.dir, "../..");
 const FRAME_CONTEXT_SOURCE = join(
   REPO_ROOT,
-  ".claude/skills/frame-context.md",
+  ".claude/skills/frame-context/SKILL.md",
 );
 const FRAME_POPULATE_SOURCE = join(
   REPO_ROOT,
-  ".claude/skills/frame-populate.md",
+  ".claude/skills/frame-populate/SKILL.md",
 );
 
 let tempDir: string;
@@ -34,18 +34,18 @@ describe("init", () => {
     expect(result.outcomes).toEqual([
       { path: ".frame/.gitignore", status: "created" },
       { path: ".frame/config.json", status: "created" },
-      { path: ".claude/skills/frame-context.md", status: "created" },
-      { path: ".claude/skills/frame-populate.md", status: "created" },
+      { path: ".claude/skills/frame-context/SKILL.md", status: "created" },
+      { path: ".claude/skills/frame-populate/SKILL.md", status: "created" },
     ]);
 
     expect(existsSync(join(tempDir, ".frame"))).toBe(true);
     expect(existsSync(join(tempDir, ".frame/.gitignore"))).toBe(true);
     expect(existsSync(join(tempDir, ".frame/config.json"))).toBe(true);
     expect(existsSync(join(tempDir, ".claude/skills"))).toBe(true);
-    expect(existsSync(join(tempDir, ".claude/skills/frame-context.md"))).toBe(
+    expect(existsSync(join(tempDir, ".claude/skills/frame-context/SKILL.md"))).toBe(
       true,
     );
-    expect(existsSync(join(tempDir, ".claude/skills/frame-populate.md"))).toBe(
+    expect(existsSync(join(tempDir, ".claude/skills/frame-populate/SKILL.md"))).toBe(
       true,
     );
   });
@@ -90,11 +90,11 @@ describe("init", () => {
     await init(tempDir);
 
     const installedContext = await readFile(
-      join(tempDir, ".claude/skills/frame-context.md"),
+      join(tempDir, ".claude/skills/frame-context/SKILL.md"),
       "utf8",
     );
     const installedPopulate = await readFile(
-      join(tempDir, ".claude/skills/frame-populate.md"),
+      join(tempDir, ".claude/skills/frame-populate/SKILL.md"),
       "utf8",
     );
     const sourceContext = await readFile(FRAME_CONTEXT_SOURCE, "utf8");
@@ -111,8 +111,8 @@ describe("init", () => {
     expect(result.outcomes).toEqual([
       { path: ".frame/.gitignore", status: "skipped" },
       { path: ".frame/config.json", status: "skipped" },
-      { path: ".claude/skills/frame-context.md", status: "skipped" },
-      { path: ".claude/skills/frame-populate.md", status: "skipped" },
+      { path: ".claude/skills/frame-context/SKILL.md", status: "skipped" },
+      { path: ".claude/skills/frame-populate/SKILL.md", status: "skipped" },
     ]);
   });
 
@@ -126,8 +126,8 @@ describe("init", () => {
     expect(result.outcomes).toEqual([
       { path: ".frame/.gitignore", status: "skipped" },
       { path: ".frame/config.json", status: "created" },
-      { path: ".claude/skills/frame-context.md", status: "created" },
-      { path: ".claude/skills/frame-populate.md", status: "created" },
+      { path: ".claude/skills/frame-context/SKILL.md", status: "created" },
+      { path: ".claude/skills/frame-populate/SKILL.md", status: "created" },
     ]);
 
     // Pre-existing .gitignore content must NOT be overwritten.

@@ -335,16 +335,16 @@ describe("CLI integration: frame init", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain(`Initialized frame at ${initDir}`);
     expect(stdout).toContain("created  .frame/.gitignore");
-    expect(stdout).toContain("created  .claude/skills/frame-context.md");
-    expect(stdout).toContain("created  .claude/skills/frame-populate.md");
+    expect(stdout).toContain("created  .claude/skills/frame-context/SKILL.md");
+    expect(stdout).toContain("created  .claude/skills/frame-populate/SKILL.md");
     expect(stdout).toContain("Next: run `frame generate`");
 
     expect(existsSync(join(initDir, ".frame/.gitignore"))).toBe(true);
     expect(
-      existsSync(join(initDir, ".claude/skills/frame-context.md")),
+      existsSync(join(initDir, ".claude/skills/frame-context/SKILL.md")),
     ).toBe(true);
     expect(
-      existsSync(join(initDir, ".claude/skills/frame-populate.md")),
+      existsSync(join(initDir, ".claude/skills/frame-populate/SKILL.md")),
     ).toBe(true);
   });
 
@@ -355,10 +355,10 @@ describe("CLI integration: frame init", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("skipped  .frame/.gitignore (exists)");
     expect(stdout).toContain(
-      "skipped  .claude/skills/frame-context.md (exists)",
+      "skipped  .claude/skills/frame-context/SKILL.md (exists)",
     );
     expect(stdout).toContain(
-      "skipped  .claude/skills/frame-populate.md (exists)",
+      "skipped  .claude/skills/frame-populate/SKILL.md (exists)",
     );
   });
 });

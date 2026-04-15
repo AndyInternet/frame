@@ -74,7 +74,7 @@ Scaffold `.frame/` and install the bundled Claude Code skills into `<root>/.clau
 
 - `.frame/.gitignore` containing `*` so the entire `.frame/` directory stays out of git
 - `.frame/config.json` prepopulated with sensible ignore defaults (see [Configuration](#configuration))
-- `.claude/skills/frame-context.md` and `.claude/skills/frame-populate.md`
+- `.claude/skills/frame-context/SKILL.md` and `.claude/skills/frame-populate/SKILL.md` (each skill lives in its own directory)
 
 Idempotent — files that already exist are skipped and their contents preserved.
 

@@ -5,10 +5,10 @@ import { defaultConfig } from "./config.ts";
 
 // Embed canonical skill files into the compiled binary. Same pattern as
 // src/core/wasm-loader.ts — these resolve to file paths at runtime.
-import frameContextSkill from "../../.claude/skills/frame-context.md" with {
+import frameContextSkill from "../../.claude/skills/frame-context/SKILL.md" with {
   type: "file",
 };
-import framePopulateSkill from "../../.claude/skills/frame-populate.md" with {
+import framePopulateSkill from "../../.claude/skills/frame-populate/SKILL.md" with {
   type: "file",
 };
 
@@ -48,21 +48,21 @@ export async function init(root: string): Promise<InitResult> {
     ),
   );
 
-  // 3. Skill files
+  // 3. Skill files — each skill lives in its own directory with a SKILL.md
   await mkdir(join(root, ".claude", "skills"), { recursive: true });
   const contextContent = await Bun.file(frameContextSkill).text();
   const populateContent = await Bun.file(framePopulateSkill).text();
   outcomes.push(
     await writeIfMissing(
       root,
-      ".claude/skills/frame-context.md",
+      ".claude/skills/frame-context/SKILL.md",
       contextContent,
     ),
   );
   outcomes.push(
     await writeIfMissing(
       root,
-      ".claude/skills/frame-populate.md",
+      ".claude/skills/frame-populate/SKILL.md",
       populateContent,
     ),
   );
