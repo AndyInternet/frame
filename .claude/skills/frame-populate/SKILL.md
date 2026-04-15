@@ -17,6 +17,14 @@ Generate purpose strings for all unpopulated entries in the project frame.
 - Skip files with parseError — nothing to describe
 - If a symbol's role is obvious from its name + signature, still write a purpose — but keep it tight
 
+## Concurrency
+
+`frame write-purposes` is safe to call in parallel. It acquires a PID-based file lock (`.frame/frame.lock`) on every write and retries with timeout if another writer is active. Stale locks from dead PIDs are cleared automatically.
+
+For large projects, fan out: dispatch parallel subagents (one per file or per batch of files), and each subagent pipes its own `frame write-purposes` call. Don't reach for `flock`, JSONL patch merging, or any other external coordination — the CLI already serializes writes correctly.
+
+Stale lock recovery: if you ever see `frame.json is locked by PID N. Run frame update --force-unlock ...`, run `frame update --force-unlock` once to clear it, then retry.
+
 ## Workflow
 
 1. Get current frame state:
