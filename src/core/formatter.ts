@@ -1,3 +1,4 @@
+import type { InitResult } from "./init.ts";
 import type { FileEntry, FrameRoot, SearchResult } from "./schema.js";
 
 // --- formatSkeleton ---
@@ -161,6 +162,22 @@ export function formatDeps(
 
   out += sections.join("");
   return out;
+}
+
+// --- formatInitResult ---
+
+export function formatInitResult(result: InitResult): string {
+  const lines: string[] = [`Initialized frame at ${result.root}`];
+  for (const outcome of result.outcomes) {
+    if (outcome.status === "created") {
+      lines.push(`  created  ${outcome.path}`);
+    } else {
+      lines.push(`  skipped  ${outcome.path} (exists)`);
+    }
+  }
+  lines.push("");
+  lines.push("Next: run `frame generate`");
+  return lines.join("\n");
 }
 
 // --- formatHelp ---

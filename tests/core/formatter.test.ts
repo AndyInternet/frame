@@ -4,6 +4,7 @@ import {
   formatDeps,
   formatFileDetail,
   formatHelp,
+  formatInitResult,
   formatSearchResults,
   formatSkeleton,
 } from "../../src/core/formatter.js";
@@ -374,5 +375,75 @@ describe("formatHelp", () => {
     expect(ANSI_RE.test(formatHelp())).toBe(false);
     expect(ANSI_RE.test(formatHelp("search"))).toBe(false);
     expect(ANSI_RE.test(formatHelp(undefined, true))).toBe(false);
+  });
+});
+
+// --- formatInitResult ---
+
+describe("formatInitResult", () => {
+  test("clean run shows all created with Next hint", () => {
+    const out = formatInitResult({
+      root: "/Users/me/myproject",
+      outcomes: [
+        { path: ".frame/.gitignore", status: "created" },
+        { path: ".claude/skills/frame-context.md", status: "created" },
+        { path: ".claude/skills/frame-populate.md", status: "created" },
+      ],
+    });
+
+    expect(out).toBe(
+      [
+        "Initialized frame at /Users/me/myproject",
+        "  created  .frame/.gitignore",
+        "  created  .claude/skills/frame-context.md",
+        "  created  .claude/skills/frame-populate.md",
+        "",
+        "Next: run `frame generate`",
+      ].join("\n"),
+    );
+  });
+
+  test("re-run shows all skipped with `(exists)` suffix and Next hint", () => {
+    const out = formatInitResult({
+      root: "/tmp/p",
+      outcomes: [
+        { path: ".frame/.gitignore", status: "skipped" },
+        { path: ".claude/skills/frame-context.md", status: "skipped" },
+        { path: ".claude/skills/frame-populate.md", status: "skipped" },
+      ],
+    });
+
+    expect(out).toBe(
+      [
+        "Initialized frame at /tmp/p",
+        "  skipped  .frame/.gitignore (exists)",
+        "  skipped  .claude/skills/frame-context.md (exists)",
+        "  skipped  .claude/skills/frame-populate.md (exists)",
+        "",
+        "Next: run `frame generate`",
+      ].join("\n"),
+    );
+  });
+
+  test("mixed run interleaves created and skipped lines", () => {
+    const out = formatInitResult({
+      root: "/x",
+      outcomes: [
+        { path: ".frame/.gitignore", status: "skipped" },
+        { path: ".claude/skills/frame-context.md", status: "created" },
+        { path: ".claude/skills/frame-populate.md", status: "created" },
+      ],
+    });
+
+    expect(out).toBe(
+      [
+        "Initialized frame at /x",
+        "  skipped  .frame/.gitignore (exists)",
+        "  created  .claude/skills/frame-context.md",
+        "  created  .claude/skills/frame-populate.md",
+        "",
+        "Next: run `frame generate`",
+      ].join("\n"),
+    );
   });
 });
