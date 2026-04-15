@@ -30,7 +30,7 @@ export interface InitResult {
  *
  * Idempotent — each file is exists-checked and reported as `created` or
  * `skipped`. Directory creates use `recursive: true` and don't appear in
- * the outcomes list; only tracked files (the .gitignore and two skills) do.
+ * the outcomes list; only tracked files (the .gitignore, config.json, and two skills) do.
  */
 export async function init(root: string): Promise<InitResult> {
   const outcomes: InitOutcome[] = [];

@@ -2,6 +2,7 @@
 
 import { dirname, join, resolve } from "node:path";
 import { Command } from "commander";
+import { loadConfig } from "./core/config.ts";
 import {
   formatApiSurface,
   formatDeps,
@@ -66,7 +67,7 @@ function addSharedOpts(cmd: Command): Command {
     );
 }
 
-function resolveGlobal(cmd: Command): GlobalOpts {
+async function resolveGlobal(cmd: Command): Promise<GlobalOpts> {
   const opts = cmd.optsWithGlobals();
   const root = opts.root ? resolve(opts.root) : findProjectRoot(process.cwd());
   const dataPath = opts.data ?? join(root, ".frame", "frame.json");
@@ -74,7 +75,9 @@ function resolveGlobal(cmd: Command): GlobalOpts {
   const concurrency = opts.concurrency
     ? Number(opts.concurrency)
     : navigator.hardwareConcurrency;
-  const extraIgnores = opts.ignore ?? [];
+  const flagIgnores: string[] = opts.ignore ?? [];
+  const config = await loadConfig(root);
+  const extraIgnores = [...config.ignore, ...flagIgnores];
   return { root, dataPath, json, concurrency, extraIgnores };
 }
 
@@ -117,7 +120,7 @@ async function runCli(): Promise<void> {
   addSharedOpts(generateCmd);
   generateCmd.action(async function (this: Command) {
     try {
-      const g = resolveGlobal(this);
+      const g = await resolveGlobal(this);
       if (this.opts().forceUnlock) {
         await forceUnlock(dirname(g.dataPath));
       }
@@ -140,7 +143,7 @@ async function runCli(): Promise<void> {
   addSharedOpts(initCmd);
   initCmd.action(async function (this: Command) {
     try {
-      const g = resolveGlobal(this);
+      const g = await resolveGlobal(this);
       const result = await init(g.root);
       process.stdout.write(`${formatInitResult(result)}\n`);
     } catch (err) {
@@ -156,7 +159,7 @@ async function runCli(): Promise<void> {
   addSharedOpts(updateCmd);
   updateCmd.action(async function (this: Command) {
     try {
-      const g = resolveGlobal(this);
+      const g = await resolveGlobal(this);
       if (this.opts().forceUnlock) {
         await forceUnlock(dirname(g.dataPath));
       }
@@ -179,7 +182,7 @@ async function runCli(): Promise<void> {
   addSharedOpts(readCmd);
   readCmd.action(async function (this: Command) {
     try {
-      const g = resolveGlobal(this);
+      const g = await resolveGlobal(this);
       const frame = await loadFrame(g.dataPath);
       if (g.json) {
         const skeleton = {
@@ -203,7 +206,7 @@ async function runCli(): Promise<void> {
   addSharedOpts(readFileCmd);
   readFileCmd.action(async function (this: Command, filePath: string) {
     try {
-      const g = resolveGlobal(this);
+      const g = await resolveGlobal(this);
       const frame = await loadFrame(g.dataPath);
       const file = frame.files.find((f) => f.path === filePath);
       if (!file) {
@@ -231,7 +234,7 @@ async function runCli(): Promise<void> {
   addSharedOpts(searchCmd);
   searchCmd.action(async function (this: Command, queryParts: string[]) {
     try {
-      const g = resolveGlobal(this);
+      const g = await resolveGlobal(this);
       const frame = await loadFrame(g.dataPath);
       const query = queryParts.join(" ");
       const cmdOpts = this.opts();
@@ -258,7 +261,7 @@ async function runCli(): Promise<void> {
   addSharedOpts(apiSurfaceCmd);
   apiSurfaceCmd.action(async function (this: Command) {
     try {
-      const g = resolveGlobal(this);
+      const g = await resolveGlobal(this);
       const frame = await loadFrame(g.dataPath);
       if (g.json) {
         const surface = frame.files.flatMap((f) =>
@@ -290,7 +293,7 @@ async function runCli(): Promise<void> {
   addSharedOpts(depsCmd);
   depsCmd.action(async function (this: Command, filePath: string) {
     try {
-      const g = resolveGlobal(this);
+      const g = await resolveGlobal(this);
       const frame = await loadFrame(g.dataPath);
       const file = frame.files.find((f) => f.path === filePath);
       if (!file) {
@@ -327,7 +330,7 @@ async function runCli(): Promise<void> {
   addSharedOpts(writePurposesCmd);
   writePurposesCmd.action(async function (this: Command) {
     try {
-      const g = resolveGlobal(this);
+      const g = await resolveGlobal(this);
       const input = await Bun.stdin.text();
       if (!input.trim()) return;
       const patches: PurposePatch[] = JSON.parse(input);
