@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -57,6 +57,48 @@ describe("CLI integration", () => {
     );
     expect(data.files.length).toBeGreaterThanOrEqual(3);
     expect(data.version).toBe("1.0.0");
+  }, 30_000);
+
+  it("frame generate honors .frame/config.json ignore patterns", async () => {
+    const tempRoot = await realpath(
+      await mkdtemp(join(tmpdir(), "frame-config-int-")),
+    );
+    try {
+      // Seed two TS files: one kept, one that should be ignored.
+      await mkdir(join(tempRoot, "src"), { recursive: true });
+      await writeFile(
+        join(tempRoot, "src/keep.ts"),
+        "export function keep(): number { return 1; }\n",
+      );
+      await mkdir(join(tempRoot, "excluded"), { recursive: true });
+      await writeFile(
+        join(tempRoot, "excluded/drop.ts"),
+        "export function drop(): number { return 2; }\n",
+      );
+
+      // Write a config that excludes `excluded/**`.
+      await mkdir(join(tempRoot, ".frame"), { recursive: true });
+      await writeFile(
+        join(tempRoot, ".frame/config.json"),
+        JSON.stringify({ ignore: ["excluded/**"] }) + "\n",
+      );
+
+      const { stderr, exitCode } = await run(
+        ["generate", "--root", tempRoot],
+        { cwd: tempRoot },
+      );
+      expect(exitCode).toBe(0);
+      expect(stderr).toContain("Generated:");
+
+      const data = JSON.parse(
+        await Bun.file(join(tempRoot, ".frame/frame.json")).text(),
+      );
+      const paths = data.files.map((f: { path: string }) => f.path);
+      expect(paths).toContain("src/keep.ts");
+      expect(paths).not.toContain("excluded/drop.ts");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   }, 30_000);
 
   // --- read (text) ---
