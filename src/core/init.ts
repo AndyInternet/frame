@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { defaultConfig } from "./config.ts";
 
 // Embed canonical skill files into the compiled binary. Same pattern as
 // src/core/wasm-loader.ts — these resolve to file paths at runtime.
@@ -38,7 +39,16 @@ export async function init(root: string): Promise<InitResult> {
   await mkdir(join(root, ".frame"), { recursive: true });
   outcomes.push(await writeIfMissing(root, ".frame/.gitignore", "*\n"));
 
-  // 2. Skill files
+  // 2. .frame/config.json
+  outcomes.push(
+    await writeIfMissing(
+      root,
+      ".frame/config.json",
+      `${JSON.stringify(defaultConfig(), null, 2)}\n`,
+    ),
+  );
+
+  // 3. Skill files
   await mkdir(join(root, ".claude", "skills"), { recursive: true });
   const contextContent = await Bun.file(frameContextSkill).text();
   const populateContent = await Bun.file(framePopulateSkill).text();

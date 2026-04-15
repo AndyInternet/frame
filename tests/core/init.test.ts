@@ -27,18 +27,20 @@ afterEach(async () => {
 });
 
 describe("init", () => {
-  test("clean run creates .frame/.gitignore and both skill files", async () => {
+  test("clean run creates .frame/.gitignore, config.json, and both skill files", async () => {
     const result = await init(tempDir);
 
     expect(result.root).toBe(tempDir);
     expect(result.outcomes).toEqual([
       { path: ".frame/.gitignore", status: "created" },
+      { path: ".frame/config.json", status: "created" },
       { path: ".claude/skills/frame-context.md", status: "created" },
       { path: ".claude/skills/frame-populate.md", status: "created" },
     ]);
 
     expect(existsSync(join(tempDir, ".frame"))).toBe(true);
     expect(existsSync(join(tempDir, ".frame/.gitignore"))).toBe(true);
+    expect(existsSync(join(tempDir, ".frame/config.json"))).toBe(true);
     expect(existsSync(join(tempDir, ".claude/skills"))).toBe(true);
     expect(existsSync(join(tempDir, ".claude/skills/frame-context.md"))).toBe(
       true,
@@ -55,6 +57,33 @@ describe("init", () => {
       "utf8",
     );
     expect(content).toBe("*\n");
+  });
+
+  test(".frame/config.json content is the default config as pretty-printed JSON", async () => {
+    await init(tempDir);
+    const content = await readFile(
+      join(tempDir, ".frame/config.json"),
+      "utf8",
+    );
+    const parsed = JSON.parse(content);
+    expect(parsed).toEqual({
+      ignore: [
+        "vendor/**",
+        "node_modules/**",
+        "dist/**",
+        "build/**",
+        ".next/**",
+        "out/**",
+        "coverage/**",
+        "**/*.generated.*",
+        "**/*.gen.*",
+        "**/*.pb.go",
+        "**/*.min.js",
+      ],
+    });
+    // Pretty-printed with a trailing newline.
+    expect(content.endsWith("\n")).toBe(true);
+    expect(content).toContain("\n  \"ignore\": [");
   });
 
   test("embedded skill content matches canonical source files", async () => {
@@ -81,6 +110,7 @@ describe("init", () => {
 
     expect(result.outcomes).toEqual([
       { path: ".frame/.gitignore", status: "skipped" },
+      { path: ".frame/config.json", status: "skipped" },
       { path: ".claude/skills/frame-context.md", status: "skipped" },
       { path: ".claude/skills/frame-populate.md", status: "skipped" },
     ]);
@@ -95,6 +125,7 @@ describe("init", () => {
 
     expect(result.outcomes).toEqual([
       { path: ".frame/.gitignore", status: "skipped" },
+      { path: ".frame/config.json", status: "created" },
       { path: ".claude/skills/frame-context.md", status: "created" },
       { path: ".claude/skills/frame-populate.md", status: "created" },
     ]);
