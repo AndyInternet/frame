@@ -70,7 +70,13 @@ frame deps src/core/walker.ts
 
 ### `frame init`
 
-Scaffold `.frame/` (with a `.gitignore` that ignores all of its contents) and install the bundled Claude Code skills (`frame-context`, `frame-populate`) into `<root>/.claude/skills/`. Idempotent — files that already exist are skipped.
+Scaffold `.frame/` and install the bundled Claude Code skills into `<root>/.claude/skills/`. Creates:
+
+- `.frame/.gitignore` containing `*` so the entire `.frame/` directory stays out of git
+- `.frame/config.json` prepopulated with sensible ignore defaults (see [Configuration](#configuration))
+- `.claude/skills/frame-context.md` and `.claude/skills/frame-populate.md`
+
+Idempotent — files that already exist are skipped and their contents preserved.
 
 ```sh
 frame init
@@ -160,6 +166,36 @@ frame help --agent      # machine-optimized output for agent context injection
 | `--concurrency <n>` | Worker count for generate/update (default: CPU count) |
 | `--ignore <glob>` | Additional ignore pattern for file walking (repeatable) |
 
+## Configuration
+
+`frame init` writes `.frame/config.json` — a per-developer file (not committed, since `.frame/` is gitignored) that persists ignore patterns across invocations.
+
+```json
+{
+  "ignore": [
+    "vendor/**",
+    "node_modules/**",
+    "dist/**",
+    "build/**",
+    ".next/**",
+    "out/**",
+    "coverage/**",
+    "**/*.generated.*",
+    "**/*.gen.*",
+    "**/*.pb.go",
+    "**/*.min.js"
+  ]
+}
+```
+
+Edit the file directly to add or remove patterns. The glob syntax is the same as `--ignore`.
+
+**Merge with the `--ignore` flag.** The final ignore list used during a run is `config.ignore` plus any `--ignore` flag values. The flag adds to the config — it never replaces it. To bypass the config entirely, delete or rename the file.
+
+**Missing config.** If `.frame/config.json` doesn't exist, it's treated as an empty ignore list. Commands don't fail or recreate the file; only `frame init` writes it.
+
+**Unknown fields.** Extra top-level fields are tolerated and ignored. A malformed `ignore` field (not an array, non-string element, or invalid JSON) fails the command with a clear error.
+
 ## Supported languages
 
 | Language | Extensions | Extracted symbols |
@@ -218,6 +254,7 @@ src/
   core/
     frame.ts              Generation and update logic
     walker.ts             File discovery (git-aware, respects .gitignore)
+    config.ts             .frame/config.json schema, defaults, loader
     workers.ts            Parallel parsing via Bun worker threads
     worker-entry.ts       Worker thread entry point
     registry.ts           Language plugin registration and lookup
