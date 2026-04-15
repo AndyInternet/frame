@@ -7,10 +7,12 @@ import {
   formatDeps,
   formatFileDetail,
   formatHelp,
+  formatInitResult,
   formatSearchResults,
   formatSkeleton,
 } from "./core/formatter.ts";
 import { generate, loadFrame, update, writePurposes } from "./core/frame.ts";
+import { init } from "./core/init.ts";
 import { forceUnlock } from "./core/lock.ts";
 import { findProjectRoot } from "./core/root.ts";
 import {
@@ -114,6 +116,21 @@ generateCmd.action(async function (this: Command) {
     if (g.json) {
       process.stdout.write(`${JSON.stringify(frame)}\n`);
     }
+  } catch (err) {
+    handleError(err);
+  }
+});
+
+// --- init ---
+const initCmd = program
+  .command("init")
+  .description("Scaffold .frame/ and install Claude Code skills");
+addSharedOpts(initCmd);
+initCmd.action(async function (this: Command) {
+  try {
+    const g = resolveGlobal(this);
+    const result = await init(g.root);
+    process.stdout.write(`${formatInitResult(result)}\n`);
   } catch (err) {
     handleError(err);
   }

@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -270,5 +270,53 @@ describe("CLI integration", () => {
     for (const file of data.files) {
       expect(file.symbols).toBeUndefined();
     }
+  });
+});
+
+describe("CLI integration: frame init", () => {
+  let initDir: string;
+
+  beforeEach(async () => {
+    const { realpath } = await import("node:fs/promises");
+    initDir = await realpath(
+      await mkdtemp(join(tmpdir(), "frame-init-itest-")),
+    );
+  });
+
+  afterEach(async () => {
+    await rm(initDir, { recursive: true, force: true });
+  });
+
+  it("frame init scaffolds .frame/.gitignore and skill files", async () => {
+    const { stdout, exitCode } = await run(["init"], { cwd: initDir });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain(`Initialized frame at ${initDir}`);
+    expect(stdout).toContain("created  .frame/.gitignore");
+    expect(stdout).toContain("created  .claude/skills/frame-context.md");
+    expect(stdout).toContain("created  .claude/skills/frame-populate.md");
+    expect(stdout).toContain("Next: run `frame generate`");
+
+    expect(existsSync(join(initDir, ".frame/.gitignore"))).toBe(true);
+    expect(
+      existsSync(join(initDir, ".claude/skills/frame-context.md")),
+    ).toBe(true);
+    expect(
+      existsSync(join(initDir, ".claude/skills/frame-populate.md")),
+    ).toBe(true);
+  });
+
+  it("frame init is idempotent — second run skips all files", async () => {
+    await run(["init"], { cwd: initDir });
+    const { stdout, exitCode } = await run(["init"], { cwd: initDir });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("skipped  .frame/.gitignore (exists)");
+    expect(stdout).toContain(
+      "skipped  .claude/skills/frame-context.md (exists)",
+    );
+    expect(stdout).toContain(
+      "skipped  .claude/skills/frame-populate.md (exists)",
+    );
   });
 });
