@@ -25,20 +25,20 @@ describe("defaultConfig", () => {
 
 let tempDir: string;
 
-beforeEach(async () => {
-  tempDir = await realpath(await mkdtemp(join(tmpdir(), "config-test-")));
-});
-
-afterEach(async () => {
-  await rm(tempDir, { recursive: true, force: true });
-});
-
 async function writeConfigFile(content: string): Promise<void> {
   await mkdir(join(tempDir, ".frame"), { recursive: true });
   await writeFile(join(tempDir, ".frame/config.json"), content);
 }
 
 describe("loadConfig", () => {
+  beforeEach(async () => {
+    tempDir = await realpath(await mkdtemp(join(tmpdir(), "config-test-")));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
   test("missing .frame/config.json returns empty ignore list", async () => {
     const config = await loadConfig(tempDir);
     expect(config.ignore).toEqual([]);
@@ -62,5 +62,32 @@ describe("loadConfig", () => {
     );
     const config = await loadConfig(tempDir);
     expect(config.ignore).toEqual(["x/**"]);
+  });
+});
+
+describe("loadConfig error cases", () => {
+  beforeEach(async () => {
+    tempDir = await realpath(await mkdtemp(join(tmpdir(), "config-test-")));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test("malformed JSON throws with a message naming the file", async () => {
+    await writeConfigFile("{not json");
+    await expect(loadConfig(tempDir)).rejects.toThrow(
+      /\.frame\/config\.json/,
+    );
+  });
+
+  test("ignore field that is not an array throws", async () => {
+    await writeConfigFile('{"ignore": "foo/**"}');
+    await expect(loadConfig(tempDir)).rejects.toThrow(/ignore.*array/);
+  });
+
+  test("ignore array containing a non-string element throws", async () => {
+    await writeConfigFile('{"ignore": ["valid/**", 42]}');
+    await expect(loadConfig(tempDir)).rejects.toThrow(/ignore.*string/);
   });
 });

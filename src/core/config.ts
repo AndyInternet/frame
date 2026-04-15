@@ -1,9 +1,8 @@
-import { join } from "node:path";
-
 /**
  * Configuration for the Frame CLI tool.
  * Handles loading and managing `.frame/config.json` files.
  */
+import { join } from "node:path";
 
 export interface FrameConfig {
   ignore: string[];
@@ -34,11 +33,34 @@ export async function loadConfig(root: string): Promise<FrameConfig> {
     return { ignore: [] };
   }
   const raw = await file.text();
-  const parsed = JSON.parse(raw) as unknown;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Invalid JSON in .frame/config.json: ${msg}`);
+  }
+
   if (typeof parsed !== "object" || parsed === null) {
     return { ignore: [] };
   }
   const obj = parsed as Record<string, unknown>;
-  const ignore = obj.ignore === undefined ? [] : (obj.ignore as string[]);
-  return { ignore };
+
+  if (obj.ignore === undefined) {
+    return { ignore: [] };
+  }
+  if (!Array.isArray(obj.ignore)) {
+    throw new Error(
+      "Invalid .frame/config.json: `ignore` must be an array of glob strings",
+    );
+  }
+  for (const entry of obj.ignore) {
+    if (typeof entry !== "string") {
+      throw new Error(
+        "Invalid .frame/config.json: every `ignore` entry must be a string glob",
+      );
+    }
+  }
+  return { ignore: obj.ignore as string[] };
 }
