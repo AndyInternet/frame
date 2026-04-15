@@ -226,6 +226,8 @@ src/
     lock.ts               File-based locking with PID liveness checks
     search.ts             Tokenized search with weighted scoring
     formatter.ts          Human-readable output formatting
+    root.ts               Project root auto-detection
+    init.ts               Project scaffolding (frame init)
     wasm-loader.ts        Static WASM grammar imports
   plugins/
     typescript/           TypeScript/TSX language plugin
