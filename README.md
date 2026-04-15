@@ -44,6 +44,9 @@ bun run format       # format with biome
 ## Quick start
 
 ```sh
+# Initialize frame in a project (creates .frame/, installs Claude skills)
+frame init
+
 # Generate a frame for the current project
 frame generate
 
@@ -64,6 +67,16 @@ frame deps src/core/walker.ts
 ```
 
 ## Commands
+
+### `frame init`
+
+Scaffold `.frame/` (with a `.gitignore` that ignores all of its contents) and install the bundled Claude Code skills (`frame-context`, `frame-populate`) into `<root>/.claude/skills/`. Idempotent — files that already exist are skipped.
+
+```sh
+frame init
+```
+
+Run once per project. Then run `frame generate`.
 
 ### `frame generate`
 
@@ -141,7 +154,7 @@ frame help --agent      # machine-optimized output for agent context injection
 
 | Flag | Description |
 |------|-------------|
-| `--root <path>` | Project root (default: cwd) |
+| `--root <path>` | Project root (default: nearest ancestor with `.git` or `.frame/`, else cwd) |
 | `--data <path>` | Frame file location (default: `.frame/frame.json`) |
 | `--json` | Raw JSON output instead of formatted text |
 | `--concurrency <n>` | Worker count for generate/update (default: CPU count) |
