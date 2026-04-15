@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll } from "bun:test";
 import {
   initParser,
-  loadLanguage,
+  getParser,
 } from "../../../src/core/wasm-loader.ts";
 import { parse } from "../../../src/plugins/typescript/parser.ts";
 import {
@@ -10,18 +10,18 @@ import {
 } from "../../../src/plugins/typescript/hashing.ts";
 import type Parser from "web-tree-sitter";
 
-let language: Parser.Language;
+let parser: Parser;
 
 beforeAll(async () => {
   await initParser();
-  language = await loadLanguage("tree-sitter-typescript.wasm");
+  parser = await getParser("tree-sitter-typescript.wasm");
 });
 
 describe("TypeScript hashing", () => {
   test("same source produces same hash (deterministic)", async () => {
     const source = "function foo(): number { return 1; }";
-    const r1 = await parse("test.ts", source, language);
-    const r2 = await parse("test.ts", source, language);
+    const r1 = await parse("test.ts", source, parser);
+    const r2 = await parse("test.ts", source, parser);
     if (!r1.ok || !r2.ok) throw new Error("parse failed");
 
     expect(hashFile(r1.parsed)).toBe(hashFile(r2.parsed));
@@ -33,8 +33,8 @@ describe("TypeScript hashing", () => {
   test("adding comment does not change hash", async () => {
     const source1 = "function foo(): number { return 1; }";
     const source2 = "// file comment\nfunction foo(): number { return 1; }";
-    const r1 = await parse("test.ts", source1, language);
-    const r2 = await parse("test.ts", source2, language);
+    const r1 = await parse("test.ts", source1, parser);
+    const r2 = await parse("test.ts", source2, parser);
     if (!r1.ok || !r2.ok) throw new Error("parse failed");
 
     // File-level comment is outside the function node, so symbol text is identical
@@ -48,8 +48,8 @@ describe("TypeScript hashing", () => {
     const source1 = "function foo(): number { return 1; }";
     const source2 =
       "function foo(): number { /* comment */ return 1; }";
-    const r1 = await parse("test.ts", source1, language);
-    const r2 = await parse("test.ts", source2, language);
+    const r1 = await parse("test.ts", source1, parser);
+    const r2 = await parse("test.ts", source2, parser);
     if (!r1.ok || !r2.ok) throw new Error("parse failed");
 
     // Comment stripped + whitespace normalized → same hash
@@ -61,8 +61,8 @@ describe("TypeScript hashing", () => {
   test("changing function body produces different hash", async () => {
     const source1 = "function foo(): number { return 1; }";
     const source2 = "function foo(): number { return 2; }";
-    const r1 = await parse("test.ts", source1, language);
-    const r2 = await parse("test.ts", source2, language);
+    const r1 = await parse("test.ts", source1, parser);
+    const r2 = await parse("test.ts", source2, parser);
     if (!r1.ok || !r2.ok) throw new Error("parse failed");
 
     expect(hashFile(r1.parsed)).not.toBe(hashFile(r2.parsed));
@@ -73,7 +73,7 @@ describe("TypeScript hashing", () => {
 
   test("symbol hash is non-empty base62 string", async () => {
     const source = "function foo(): number { return 1; }";
-    const r = await parse("test.ts", source, language);
+    const r = await parse("test.ts", source, parser);
     if (!r.ok) throw new Error("parse failed");
 
     const hash = hashSymbol(r.parsed.symbols[0]);
@@ -85,7 +85,7 @@ describe("TypeScript hashing", () => {
     const source = await Bun.file(
       "tests/fixtures/typescript/simple.ts",
     ).text();
-    const r = await parse("simple.ts", source, language);
+    const r = await parse("simple.ts", source, parser);
     if (!r.ok) throw new Error("parse failed");
 
     const hash = hashFile(r.parsed);

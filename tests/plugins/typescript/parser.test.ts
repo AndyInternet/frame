@@ -1,17 +1,17 @@
 import { describe, test, expect, beforeAll } from "bun:test";
 import {
   initParser,
-  loadLanguage,
+  getParser,
 } from "../../../src/core/wasm-loader.ts";
 import { parse } from "../../../src/plugins/typescript/parser.ts";
 import { typescriptPlugin } from "../../../src/plugins/typescript/index.ts";
 import type Parser from "web-tree-sitter";
 
-let language: Parser.Language;
+let parser: Parser;
 
 beforeAll(async () => {
   await initParser();
-  language = await loadLanguage("tree-sitter-typescript.wasm");
+  parser = await getParser("tree-sitter-typescript.wasm");
 });
 
 describe("TypeScript parser — simple.ts", () => {
@@ -19,7 +19,7 @@ describe("TypeScript parser — simple.ts", () => {
     const source = await Bun.file(
       "tests/fixtures/typescript/simple.ts",
     ).text();
-    const result = await parse("simple.ts", source, language);
+    const result = await parse("simple.ts", source, parser);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     // MAX_RETRIES, greet, add, internalHelper
@@ -30,7 +30,7 @@ describe("TypeScript parser — simple.ts", () => {
     const source = await Bun.file(
       "tests/fixtures/typescript/simple.ts",
     ).text();
-    const result = await parse("simple.ts", source, language);
+    const result = await parse("simple.ts", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const names = result.parsed.symbols.map((s) => s.name);
@@ -52,7 +52,7 @@ describe("TypeScript parser — simple.ts", () => {
     const source = await Bun.file(
       "tests/fixtures/typescript/simple.ts",
     ).text();
-    const result = await parse("simple.ts", source, language);
+    const result = await parse("simple.ts", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const byName = Object.fromEntries(
@@ -68,7 +68,7 @@ describe("TypeScript parser — simple.ts", () => {
     const source = await Bun.file(
       "tests/fixtures/typescript/simple.ts",
     ).text();
-    const result = await parse("simple.ts", source, language);
+    const result = await parse("simple.ts", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const byName = Object.fromEntries(
@@ -89,7 +89,7 @@ describe("TypeScript parser — simple.ts", () => {
     const source = await Bun.file(
       "tests/fixtures/typescript/simple.ts",
     ).text();
-    const result = await parse("simple.ts", source, language);
+    const result = await parse("simple.ts", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const byName = Object.fromEntries(
@@ -104,7 +104,7 @@ describe("TypeScript parser — simple.ts", () => {
     const source = await Bun.file(
       "tests/fixtures/typescript/simple.ts",
     ).text();
-    const result = await parse("simple.ts", source, language);
+    const result = await parse("simple.ts", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     expect(result.parsed.imports).toEqual(["./utils", "node:fs"]);
@@ -128,7 +128,7 @@ describe("TypeScript parser — simple.ts", () => {
     const source = await Bun.file(
       "tests/fixtures/typescript/simple.ts",
     ).text();
-    const result = await parse("simple.ts", source, language);
+    const result = await parse("simple.ts", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const maxRetries = result.parsed.symbols.find(
@@ -144,7 +144,7 @@ describe("TypeScript parser — complex.ts", () => {
     const source = await Bun.file(
       "tests/fixtures/typescript/complex.ts",
     ).text();
-    const result = await parse("complex.ts", source, language);
+    const result = await parse("complex.ts", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const classSym = result.parsed.symbols.find(
@@ -190,7 +190,7 @@ describe("TypeScript parser — complex.ts", () => {
     const source = await Bun.file(
       "tests/fixtures/typescript/complex.ts",
     ).text();
-    const result = await parse("complex.ts", source, language);
+    const result = await parse("complex.ts", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const methods = result.parsed.symbols.filter(
@@ -213,7 +213,7 @@ describe("TypeScript parser — complex.ts", () => {
     const source = await Bun.file(
       "tests/fixtures/typescript/complex.ts",
     ).text();
-    const result = await parse("complex.ts", source, language);
+    const result = await parse("complex.ts", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const iface = result.parsed.symbols.find(
@@ -237,7 +237,7 @@ describe("TypeScript parser — complex.ts", () => {
     const source = await Bun.file(
       "tests/fixtures/typescript/complex.ts",
     ).text();
-    const result = await parse("complex.ts", source, language);
+    const result = await parse("complex.ts", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const typeSym = result.parsed.symbols.find(
@@ -256,7 +256,7 @@ describe("TypeScript parser — complex.ts", () => {
     const source = await Bun.file(
       "tests/fixtures/typescript/complex.ts",
     ).text();
-    const result = await parse("complex.ts", source, language);
+    const result = await parse("complex.ts", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const enumSym = result.parsed.symbols.find(
@@ -280,7 +280,7 @@ describe("TypeScript parser — complex.ts", () => {
     const source = await Bun.file(
       "tests/fixtures/typescript/complex.ts",
     ).text();
-    const result = await parse("complex.ts", source, language);
+    const result = await parse("complex.ts", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const fetchData = result.parsed.symbols.find(
@@ -295,7 +295,7 @@ describe("TypeScript parser — complex.ts", () => {
     const source = await Bun.file(
       "tests/fixtures/typescript/complex.ts",
     ).text();
-    const result = await parse("complex.ts", source, language);
+    const result = await parse("complex.ts", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const repo = result.parsed.symbols.find(
@@ -315,7 +315,7 @@ describe("TypeScript parser — broken.ts", () => {
     const source = await Bun.file(
       "tests/fixtures/typescript/broken.ts",
     ).text();
-    const result = await parse("broken.ts", source, language);
+    const result = await parse("broken.ts", source, parser);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(typeof result.error).toBe("string");
@@ -326,7 +326,7 @@ describe("TypeScript parser — broken.ts", () => {
 describe("TypeScript parser — edge cases", () => {
   test("file with only imports produces empty symbols", async () => {
     const source = `import { foo } from "./bar";\nimport React from "react";`;
-    const result = await parse("imports-only.ts", source, language);
+    const result = await parse("imports-only.ts", source, parser);
     if (!result.ok) throw new Error(result.error);
     expect(result.parsed.symbols).toHaveLength(0);
     expect(result.parsed.imports).toEqual(["./bar", "react"]);
@@ -334,7 +334,7 @@ describe("TypeScript parser — edge cases", () => {
 
   test("arrow function in const is kind function", async () => {
     const source = `export const greet = (name: string): string => \`Hello, \${name}\`;`;
-    const result = await parse("arrow.ts", source, language);
+    const result = await parse("arrow.ts", source, parser);
     if (!result.ok) throw new Error(result.error);
     expect(result.parsed.symbols).toHaveLength(1);
     expect(result.parsed.symbols[0].kind).toBe("function");
@@ -344,7 +344,7 @@ describe("TypeScript parser — edge cases", () => {
 
   test("export default function gets name or default", async () => {
     const source = `export default function handler() { return 1; }`;
-    const result = await parse("default.ts", source, language);
+    const result = await parse("default.ts", source, parser);
     if (!result.ok) throw new Error(result.error);
     expect(result.parsed.symbols).toHaveLength(1);
     expect(result.parsed.symbols[0].exported).toBe(true);
@@ -353,7 +353,7 @@ describe("TypeScript parser — edge cases", () => {
 
   test("re-exports tracked as imports not symbols", async () => {
     const source = `export { foo } from './bar';`;
-    const result = await parse("reexport.ts", source, language);
+    const result = await parse("reexport.ts", source, parser);
     if (!result.ok) throw new Error(result.error);
     expect(result.parsed.symbols).toHaveLength(0);
     expect(result.parsed.imports).toContain("./bar");

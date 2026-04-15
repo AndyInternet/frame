@@ -1,7 +1,8 @@
+import type { Subprocess } from "bun";
 import { rawHash } from "./hash.ts";
 import { getPluginById } from "./registry.ts";
 import type { WorkerRequest, WorkerResponse } from "./schema.ts";
-import { initParser, loadLanguage } from "./wasm-loader.ts";
+import { getParser, initParser } from "./wasm-loader.ts";
 
 export interface PoolOptions {
   concurrency: number;
@@ -10,7 +11,7 @@ export interface PoolOptions {
   onError: (filePath: string, error: string) => void;
 }
 
-/** Process a single file in the main thread (same logic as worker-entry.ts) */
+/** Process a single file in the main thread (fallback when subprocess spawn fails) */
 async function processInProcess(req: WorkerRequest): Promise<WorkerResponse> {
   const plugin = getPluginById(req.pluginId);
   if (!plugin) {
@@ -24,8 +25,8 @@ async function processInProcess(req: WorkerRequest): Promise<WorkerResponse> {
   }
 
   await initParser();
-  const lang = await loadLanguage(plugin.grammarWasmFile);
-  const result = await plugin.parse(req.filePath, req.source, lang);
+  const parser = await getParser(plugin.grammarWasmFile);
+  const result = await plugin.parse(req.filePath, req.source, parser);
 
   if (!result.ok) {
     return {
@@ -70,33 +71,74 @@ async function processInProcess(req: WorkerRequest): Promise<WorkerResponse> {
   };
 }
 
-/** Try to spawn workers; returns null if workers are not available (e.g. compiled binary) */
-function tryCreateWorkers(count: number): Worker[] | null {
-  try {
-    const workers = Array.from(
-      { length: count },
-      () => new Worker(new URL("./worker-entry.ts", import.meta.url)),
-    );
-    return workers;
-  } catch {
-    return null;
+type WorkerProc = Subprocess<"ignore", "pipe", "inherit">;
+
+/**
+ * Build the command used to spawn a worker subprocess.
+ *
+ * - Compiled (`bun build --compile`): re-invoke the compiled binary itself;
+ *   cli.ts dispatches to the worker loop via the __FRAME_WORKER env var.
+ * - Dev: invoke bun on worker-entry.ts directly. We can't reuse
+ *   `process.argv[1]` because under `bun test` that points at the test file,
+ *   which then re-executes outside the test runner.
+ */
+function workerCommand(): string[] {
+  const isCompiled = import.meta.url.startsWith("/$bunfs/");
+  if (isCompiled) {
+    return [process.execPath];
   }
+  // Resolve the sibling worker-entry.ts relative to this file's location.
+  const workerEntryPath = new URL("./worker-entry.ts", import.meta.url)
+    .pathname;
+  return [process.execPath, workerEntryPath];
 }
 
-/** Process files via worker threads */
+/**
+ * Process files via a pool of subprocess workers.
+ *
+ * If a worker crashes (e.g. OOM on a pathologically large file), its in-flight
+ * file is marked as a parse error and a replacement worker is spawned so the
+ * rest of the batch still completes. Returns null only if we can't spawn any
+ * workers at all.
+ */
 async function processWithWorkers(
   files: Array<{ path: string; source: string; pluginId: string }>,
-  workers: Worker[],
   opts: PoolOptions,
-): Promise<WorkerResponse[]> {
-  const results: WorkerResponse[] = new Array(files.length);
-  let nextIndex = 0;
-  let completed = 0;
+): Promise<WorkerResponse[] | null> {
   const total = files.length;
+  const results: WorkerResponse[] = new Array(total);
+  let completed = 0;
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(opts.concurrency, total));
 
-  return new Promise<WorkerResponse[]>((resolve, reject) => {
-    function dispatch(worker: Worker) {
-      if (nextIndex >= files.length) return;
+  const cmd = workerCommand();
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const alive = new Set<WorkerProc>();
+    // Map worker → index of the file it's currently processing
+    const inFlight = new Map<WorkerProc, number>();
+
+    function finish(): void {
+      if (settled) return;
+      settled = true;
+      for (const w of alive) w.kill();
+      resolve(results);
+    }
+
+    function recordResult(idx: number, resp: WorkerResponse): void {
+      results[idx] = resp;
+      completed++;
+      if (resp.parseError) {
+        opts.onError(resp.filePath, resp.parseError);
+      }
+      opts.onProgress(completed, total, resp.filePath);
+      if (completed === total) finish();
+    }
+
+    function dispatch(proc: WorkerProc): void {
+      if (settled) return;
+      if (nextIndex >= total) return;
       const idx = nextIndex++;
       const file = files[idx];
       const req: WorkerRequest = {
@@ -105,44 +147,79 @@ async function processWithWorkers(
         pluginId: file.pluginId,
         projectRoot: opts.projectRoot,
       };
-
-      worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
-        const resp = event.data;
-        results[idx] = resp;
-        completed++;
-
-        if (resp.parseError) {
-          opts.onError(resp.filePath, resp.parseError);
-        }
-        opts.onProgress(completed, total, resp.filePath);
-
-        if (completed === total) {
-          for (const w of workers) w.terminate();
-          resolve(results);
-        } else {
-          dispatch(worker);
-        }
-      };
-
-      worker.onerror = (err) => {
-        for (const w of workers) w.terminate();
-        const msg =
-          err instanceof ErrorEvent
-            ? err.message || String(err.error)
-            : String(err);
-        reject(new Error(`Worker error: ${msg}`));
-      };
-
-      worker.postMessage(req);
+      inFlight.set(proc, idx);
+      try {
+        proc.send(req);
+      } catch {
+        // Worker already dead — exit handler will pick it up.
+      }
     }
 
-    for (const worker of workers) {
-      dispatch(worker);
+    function spawnOne(): WorkerProc | null {
+      try {
+        const proc = Bun.spawn(cmd, {
+          env: { ...process.env, __FRAME_WORKER: "1" },
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "inherit",
+          serialization: "json",
+          ipc(message) {
+            const idx = inFlight.get(proc);
+            if (idx === undefined) return;
+            inFlight.delete(proc);
+            recordResult(idx, message as WorkerResponse);
+            dispatch(proc);
+          },
+        }) as WorkerProc;
+        alive.add(proc);
+        proc.exited.then(() => {
+          alive.delete(proc);
+          const idx = inFlight.get(proc);
+          if (idx !== undefined) {
+            inFlight.delete(proc);
+            // Worker died with a file in flight — almost always OOM on a huge
+            // or pathological file. Mark that file as unparseable.
+            const file = files[idx];
+            recordResult(idx, {
+              filePath: file.path,
+              pluginId: file.pluginId,
+              pluginVersion: "unknown",
+              parseError: "Worker crashed (likely out of memory)",
+              rawHash: rawHash(file.source),
+            });
+          }
+          // Keep the pool at capacity if there's more work to do.
+          if (!settled && nextIndex < total && alive.size < workerCount) {
+            const replacement = spawnOne();
+            if (replacement) dispatch(replacement);
+          }
+          // If every worker has died and there's still work, we can't make
+          // progress — fall through to main-thread fallback.
+          if (!settled && alive.size === 0 && completed < total) {
+            settled = true;
+            resolve(null);
+          }
+        });
+        return proc;
+      } catch {
+        return null;
+      }
     }
+
+    const initial: WorkerProc[] = [];
+    for (let i = 0; i < workerCount; i++) {
+      const proc = spawnOne();
+      if (proc) initial.push(proc);
+    }
+    if (initial.length === 0) {
+      resolve(null);
+      return;
+    }
+    for (const proc of initial) dispatch(proc);
   });
 }
 
-/** Process files in main thread sequentially */
+/** Process files in main thread sequentially (compat fallback). */
 async function processInMainThread(
   files: Array<{ path: string; source: string; pluginId: string }>,
   opts: PoolOptions,
@@ -177,16 +254,9 @@ export async function processFiles(
 ): Promise<WorkerResponse[]> {
   if (files.length === 0) return [];
 
-  const workerCount = Math.max(1, Math.min(opts.concurrency, files.length));
-  const workers = tryCreateWorkers(workerCount);
+  const workerResult = await processWithWorkers(files, opts);
+  if (workerResult) return workerResult;
 
-  if (workers) {
-    try {
-      return await processWithWorkers(files, workers, opts);
-    } catch {
-      // Workers failed at runtime (e.g. compiled binary) — fall back to main thread
-    }
-  }
-
+  // Workers couldn't be spawned at all — last-resort fallback.
   return processInMainThread(files, opts);
 }

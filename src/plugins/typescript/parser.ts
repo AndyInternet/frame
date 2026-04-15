@@ -123,14 +123,12 @@ function getDeclKind(node: Parser.SyntaxNode): "const" | "let" {
   return "const";
 }
 
-/** Parse TypeScript/TSX source using tree-sitter AST */
+/** Parse TypeScript/TSX source using tree-sitter AST. Caller owns `parser`. */
 export async function parse(
   filePath: string,
   source: string,
-  language: Parser.Language,
+  parser: Parser,
 ): Promise<ParseResult> {
-  const parser = new Parser();
-  parser.setLanguage(language);
   const tree = parser.parse(source);
   const root = tree.rootNode;
 
@@ -154,7 +152,6 @@ export async function parse(
       }
     }
     collectErrors(root);
-    parser.delete();
     tree.delete();
     return {
       ok: false,
@@ -608,7 +605,6 @@ export async function parse(
     }
   }
 
-  parser.delete();
   tree.delete();
 
   const fileAstText = symbols.map((s) => s.astText).join("\n");

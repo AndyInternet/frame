@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll } from "bun:test";
 import {
   initParser,
-  loadLanguage,
+  getParser,
 } from "../../../src/core/wasm-loader.ts";
 import {
   parse,
@@ -9,17 +9,17 @@ import {
 } from "../../../src/plugins/go/parser.ts";
 import type Parser from "web-tree-sitter";
 
-let language: Parser.Language;
+let parser: Parser;
 
 beforeAll(async () => {
   await initParser();
-  language = await loadLanguage("tree-sitter-go.wasm");
+  parser = await getParser("tree-sitter-go.wasm");
 });
 
 describe("Go parser — simple.go", () => {
   test("extracts correct function count", async () => {
     const source = await Bun.file("tests/fixtures/go/simple.go").text();
-    const result = await parse("simple.go", source, language);
+    const result = await parse("simple.go", source, parser);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     // Greet, Add, Divide, internalHelper
@@ -28,7 +28,7 @@ describe("Go parser — simple.go", () => {
 
   test("extracts symbol names and kinds", async () => {
     const source = await Bun.file("tests/fixtures/go/simple.go").text();
-    const result = await parse("simple.go", source, language);
+    const result = await parse("simple.go", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const names = result.parsed.symbols.map((s) => s.name);
@@ -44,7 +44,7 @@ describe("Go parser — simple.go", () => {
 
   test("detects exported vs unexported", async () => {
     const source = await Bun.file("tests/fixtures/go/simple.go").text();
-    const result = await parse("simple.go", source, language);
+    const result = await parse("simple.go", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const byName = Object.fromEntries(
@@ -58,7 +58,7 @@ describe("Go parser — simple.go", () => {
 
   test("detects error return", async () => {
     const source = await Bun.file("tests/fixtures/go/simple.go").text();
-    const result = await parse("simple.go", source, language);
+    const result = await parse("simple.go", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const byName = Object.fromEntries(
@@ -72,7 +72,7 @@ describe("Go parser — simple.go", () => {
 
   test("extracts import paths", async () => {
     const source = await Bun.file("tests/fixtures/go/simple.go").text();
-    const result = await parse("simple.go", source, language);
+    const result = await parse("simple.go", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     expect(result.parsed.imports).toContain("fmt");
@@ -82,7 +82,7 @@ describe("Go parser — simple.go", () => {
 
   test("extracts parameters", async () => {
     const source = await Bun.file("tests/fixtures/go/simple.go").text();
-    const result = await parse("simple.go", source, language);
+    const result = await parse("simple.go", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const byName = Object.fromEntries(
@@ -104,7 +104,7 @@ describe("Go parser — simple.go", () => {
 
   test("extracts return types", async () => {
     const source = await Bun.file("tests/fixtures/go/simple.go").text();
-    const result = await parse("simple.go", source, language);
+    const result = await parse("simple.go", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const byName = Object.fromEntries(
@@ -120,7 +120,7 @@ describe("Go parser — simple.go", () => {
 describe("Go parser — complex.go", () => {
   test("extracts struct with fields and tags", async () => {
     const source = await Bun.file("tests/fixtures/go/complex.go").text();
-    const result = await parse("complex.go", source, language);
+    const result = await parse("complex.go", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const userStruct = result.parsed.symbols.find(
@@ -165,7 +165,7 @@ describe("Go parser — complex.go", () => {
 
   test("extracts method receiver type and pointer flag", async () => {
     const source = await Bun.file("tests/fixtures/go/complex.go").text();
-    const result = await parse("complex.go", source, language);
+    const result = await parse("complex.go", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const methods = result.parsed.symbols.filter((s) => s.kind === "method");
@@ -189,7 +189,7 @@ describe("Go parser — complex.go", () => {
 
   test("extracts interface members", async () => {
     const source = await Bun.file("tests/fixtures/go/complex.go").text();
-    const result = await parse("complex.go", source, language);
+    const result = await parse("complex.go", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const serializer = result.parsed.symbols.find(
@@ -210,7 +210,7 @@ describe("Go parser — complex.go", () => {
 
   test("extracts iota const block as enum", async () => {
     const source = await Bun.file("tests/fixtures/go/complex.go").text();
-    const result = await parse("complex.go", source, language);
+    const result = await parse("complex.go", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const enumSym = result.parsed.symbols.find((s) => s.kind === "enum");
@@ -234,7 +234,7 @@ describe("Go parser — complex.go", () => {
 
   test("extracts function with pointer return", async () => {
     const source = await Bun.file("tests/fixtures/go/complex.go").text();
-    const result = await parse("complex.go", source, language);
+    const result = await parse("complex.go", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const newUser = result.parsed.symbols.find(
@@ -250,7 +250,7 @@ describe("Go parser — complex.go", () => {
 describe("Go parser — broken.go", () => {
   test("returns parse error", async () => {
     const source = await Bun.file("tests/fixtures/go/broken.go").text();
-    const result = await parse("broken.go", source, language);
+    const result = await parse("broken.go", source, parser);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(typeof result.error).toBe("string");
@@ -295,7 +295,7 @@ describe("Go import classification", () => {
 describe("Go parser — edge cases", () => {
   test("init function is unexported", async () => {
     const source = `package main\n\nfunc init() {\n\tprintln("init")\n}\n`;
-    const result = await parse("init.go", source, language);
+    const result = await parse("init.go", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     expect(result.parsed.symbols).toHaveLength(1);
@@ -313,7 +313,7 @@ describe("Go parser — edge cases", () => {
       "func (f Foo) Value() {}",
       "func (f *Foo) Pointer() {}",
     ].join("\n");
-    const result = await parse("receivers.go", source, language);
+    const result = await parse("receivers.go", source, parser);
     if (!result.ok) throw new Error(result.error);
 
     const methods = result.parsed.symbols.filter((s) => s.kind === "method");
@@ -334,7 +334,7 @@ describe("Go parser — edge cases", () => {
 
   test("file with only imports produces empty symbols", async () => {
     const source = `package main\n\nimport "fmt"\n`;
-    const result = await parse("imports-only.go", source, language);
+    const result = await parse("imports-only.go", source, parser);
     if (!result.ok) throw new Error(result.error);
     expect(result.parsed.symbols).toHaveLength(0);
     expect(result.parsed.imports).toEqual(["fmt"]);

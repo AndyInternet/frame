@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll } from "bun:test";
 import {
   initParser,
-  loadLanguage,
+  getParser,
 } from "../../../src/core/wasm-loader.ts";
 import { parse } from "../../../src/plugins/go/parser.ts";
 import {
@@ -10,18 +10,18 @@ import {
 } from "../../../src/plugins/go/hashing.ts";
 import type Parser from "web-tree-sitter";
 
-let language: Parser.Language;
+let parser: Parser;
 
 beforeAll(async () => {
   await initParser();
-  language = await loadLanguage("tree-sitter-go.wasm");
+  parser = await getParser("tree-sitter-go.wasm");
 });
 
 describe("Go hashing", () => {
   test("same source produces same hash (deterministic)", async () => {
     const source = "package main\n\nfunc Foo() int { return 1 }\n";
-    const r1 = await parse("test.go", source, language);
-    const r2 = await parse("test.go", source, language);
+    const r1 = await parse("test.go", source, parser);
+    const r2 = await parse("test.go", source, parser);
     if (!r1.ok || !r2.ok) throw new Error("parse failed");
 
     expect(hashFile(r1.parsed)).toBe(hashFile(r2.parsed));
@@ -34,8 +34,8 @@ describe("Go hashing", () => {
     const source1 = "package main\n\nfunc Foo() int { return 1 }\n";
     const source2 =
       "package main\n\n// top comment\nfunc Foo() int { return 1 }\n";
-    const r1 = await parse("test.go", source1, language);
-    const r2 = await parse("test.go", source2, language);
+    const r1 = await parse("test.go", source1, parser);
+    const r2 = await parse("test.go", source2, parser);
     if (!r1.ok || !r2.ok) throw new Error("parse failed");
 
     expect(hashFile(r1.parsed)).toBe(hashFile(r2.parsed));
@@ -48,8 +48,8 @@ describe("Go hashing", () => {
     const source1 = "package main\n\nfunc Foo() int { return 1 }\n";
     const source2 =
       "package main\n\nfunc Foo() int { /* comment */ return 1 }\n";
-    const r1 = await parse("test.go", source1, language);
-    const r2 = await parse("test.go", source2, language);
+    const r1 = await parse("test.go", source1, parser);
+    const r2 = await parse("test.go", source2, parser);
     if (!r1.ok || !r2.ok) throw new Error("parse failed");
 
     expect(hashSymbol(r1.parsed.symbols[0])).toBe(
@@ -60,8 +60,8 @@ describe("Go hashing", () => {
   test("changing function body produces different hash", async () => {
     const source1 = "package main\n\nfunc Foo() int { return 1 }\n";
     const source2 = "package main\n\nfunc Foo() int { return 2 }\n";
-    const r1 = await parse("test.go", source1, language);
-    const r2 = await parse("test.go", source2, language);
+    const r1 = await parse("test.go", source1, parser);
+    const r2 = await parse("test.go", source2, parser);
     if (!r1.ok || !r2.ok) throw new Error("parse failed");
 
     expect(hashFile(r1.parsed)).not.toBe(hashFile(r2.parsed));
@@ -72,7 +72,7 @@ describe("Go hashing", () => {
 
   test("symbol hash is non-empty base62 string", async () => {
     const source = "package main\n\nfunc Foo() int { return 1 }\n";
-    const r = await parse("test.go", source, language);
+    const r = await parse("test.go", source, parser);
     if (!r.ok) throw new Error("parse failed");
 
     const hash = hashSymbol(r.parsed.symbols[0]);
@@ -82,7 +82,7 @@ describe("Go hashing", () => {
 
   test("file hash is non-empty base62 string", async () => {
     const source = await Bun.file("tests/fixtures/go/simple.go").text();
-    const r = await parse("simple.go", source, language);
+    const r = await parse("simple.go", source, parser);
     if (!r.ok) throw new Error("parse failed");
 
     const hash = hashFile(r.parsed);

@@ -88,10 +88,16 @@ export interface LanguagePlugin {
   fileExtensions: string[];
   symbolKinds: SymbolKind[];
   grammarWasmFile: string;
+  /**
+   * Parse a source file. The caller owns `parser` lifetime and must call
+   * `parser.setLanguage()` before invocation — plugins reuse the parser
+   * instead of allocating a new one per file (each `new Parser()` leaks
+   * an entry in web-tree-sitter's WASM function table).
+   */
   parse(
     filePath: string,
     source: string,
-    language: Parser.Language,
+    parser: Parser,
   ): Promise<ParseResult>;
   hashFile(parsed: ParsedFile): string;
   hashSymbol(symbol: RawSymbol): string;

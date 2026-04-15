@@ -1,37 +1,57 @@
 import { rawHash } from "./hash.ts";
 import { getPluginById } from "./registry.ts";
 import type { WorkerRequest, WorkerResponse } from "./schema.ts";
-import { initParser, loadLanguage } from "./wasm-loader.ts";
+import { getParser, initParser } from "./wasm-loader.ts";
 
-declare const self: Worker;
+/**
+ * Worker subprocess entry. Activated from cli.ts when __FRAME_WORKER=1.
+ *
+ * We use child-process IPC (Bun.spawn + process.send/on("message")) instead
+ * of Web Workers because `bun build --compile` doesn't bundle worker scripts
+ * referenced via `new URL(..., import.meta.url)` — the subprocess is the
+ * same compiled binary, re-entered in worker mode.
+ */
+export async function runWorker(): Promise<void> {
+  process.on("message", async (req: WorkerRequest) => {
+    const resp = await handleRequest(req);
+    process.send!(resp);
+  });
 
-self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
-  const req = event.data;
+  // Keep the event loop alive even before the first message arrives.
+  process.stdin.resume();
+}
+
+// Allow this file to be run directly as a subprocess in dev mode
+// (`bun src/core/worker-entry.ts`). In compiled mode, cli.ts handles
+// the worker dispatch via the __FRAME_WORKER env var instead.
+if (import.meta.main) {
+  await runWorker();
+}
+
+async function handleRequest(req: WorkerRequest): Promise<WorkerResponse> {
   const plugin = getPluginById(req.pluginId);
   if (!plugin) {
-    self.postMessage({
+    return {
       filePath: req.filePath,
       pluginId: req.pluginId,
       pluginVersion: "unknown",
       parseError: `Unknown plugin: ${req.pluginId}`,
       rawHash: rawHash(req.source),
-    } satisfies WorkerResponse);
-    return;
+    };
   }
 
   await initParser();
-  const lang = await loadLanguage(plugin.grammarWasmFile);
-  const result = await plugin.parse(req.filePath, req.source, lang);
+  const parser = await getParser(plugin.grammarWasmFile);
+  const result = await plugin.parse(req.filePath, req.source, parser);
 
   if (!result.ok) {
-    self.postMessage({
+    return {
       filePath: req.filePath,
       pluginId: req.pluginId,
       pluginVersion: plugin.version,
       parseError: result.error,
       rawHash: rawHash(req.source),
-    } satisfies WorkerResponse);
-    return;
+    };
   }
 
   const parsed = result.parsed;
@@ -53,7 +73,7 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   );
   const exports = symbols.filter((s) => s.exported).map((s) => s.name);
 
-  self.postMessage({
+  return {
     filePath: req.filePath,
     pluginId: req.pluginId,
     pluginVersion: plugin.version,
@@ -64,5 +84,5 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
       externalImports,
       exports,
     },
-  } satisfies WorkerResponse);
-};
+  };
+}
