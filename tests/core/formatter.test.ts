@@ -376,6 +376,29 @@ describe("formatHelp", () => {
     expect(ANSI_RE.test(formatHelp("search"))).toBe(false);
     expect(ANSI_RE.test(formatHelp(undefined, true))).toBe(false);
   });
+
+  test("top-level help lists init command", () => {
+    const out = formatHelp();
+    expect(out).toContain("init");
+    expect(out).toContain("scaffold .frame/");
+  });
+
+  test("top-level help shows updated --root default", () => {
+    const out = formatHelp();
+    expect(out).toContain("nearest .git or .frame ancestor");
+  });
+
+  test("init command help describes scaffold behavior", () => {
+    const out = formatHelp("init");
+    expect(out).toContain("frame init");
+    expect(out).toContain(".frame/.gitignore");
+    expect(out).toContain(".claude/skills");
+  });
+
+  test("agent help lists frame init in WRITE WORKFLOW", () => {
+    const out = formatHelp(undefined, true);
+    expect(out).toContain("frame init");
+  });
 });
 
 // --- formatInitResult ---

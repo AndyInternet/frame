@@ -186,6 +186,12 @@ const COMMANDS: Record<
   string,
   { usage: string; args?: string; flags?: string; output: string; hint: string }
 > = {
+  init: {
+    usage: "frame init",
+    output:
+      "creates .frame/.gitignore (ignores all .frame contents)\n    and installs frame-context and frame-populate skills into .claude/skills/.\n    idempotent — already-present files are skipped.",
+    hint: "run once per project to bootstrap. then run `frame generate`.",
+  },
   generate: {
     usage: "frame generate",
     flags: [
@@ -262,6 +268,7 @@ const COMMANDS: Record<
 const TOP_LEVEL_HELP = `frame — structural frame of your codebase
 
 COMMANDS
+  init              scaffold .frame/ and install Claude Code skills
   generate          build frame from scratch
   update            re-hash files, invalidate changed purposes
   read              list all files with purposes (no symbols)
@@ -275,7 +282,7 @@ COMMANDS
   help --agent      machine-optimized summary for agent context injection
 
 OPTIONS
-  --root <path>     project root (default: cwd)
+  --root <path>     project root (default: nearest .git or .frame ancestor, else cwd)
   --data <path>     frame file location (default: .frame/frame.json)
   --json            return raw JSON instead of formatted text (read commands)
   --concurrency <n> worker count for generate/update (default: cpu count)
@@ -292,12 +299,13 @@ READ WORKFLOW:
   5. frame deps <path>         → import graph for one file (--external for packages)
 
 WRITE WORKFLOW (maintainers only):
+  frame init                   → scaffold .frame/ and install Claude skills
   frame generate               → build frame from scratch
   frame update                 → sync frame to current code
 
 FLAGS (all commands):
   --json                       → raw JSON output
-  --root <path>                → project root override
+  --root <path>                → project root override (default: nearest .git or .frame ancestor)
   --data <path>                → frame file override
 
 SEARCH FLAGS:
